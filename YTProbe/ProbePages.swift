@@ -49,6 +49,9 @@ final class PageProbeModel: ObservableObject {
     private var lastState: ProbePollState?
     private var lastLean: ProbeLeanbackState?
     private var errStreak = 0
+    /// E-P6: the refusal signal, captured from ANY
+    /// playability read during the run (see readPlayability).
+    private var refusalSignal: (status: String, reason: String)?
     private var sawPin = false
     private var pinPolls = 0
     private var playingAt: Date?
@@ -180,7 +183,13 @@ final class PageProbeModel: ObservableObject {
                 : "KHÔNG — pin không bao giờ đứng (layout/CSS không qua được trên tvOS WebKit)")
         }
         if spec.refusal {
-            if !state.err.isEmpty || errStreak >= 3 {
+            if let sig = refusalSignal {
+                finish("ĐẠT — tín hiệu từ chối đọc được từ playability: "
+                    + "status=\(sig.status) reason='\(sig.reason)'")
+            } else if !state.err.isEmpty || errStreak >= 3 {
+                // Fallback evidence only: the poll's error
+                // text, when no playability read has produced
+                // the refusal signal.
                 Task { await self.readPlayability(context: "refusal") }
                 finish("ĐẠT — tín hiệu từ chối đọc được: err='\(state.err)' (xem dòng playability)")
             } else if state.playing {
@@ -228,7 +237,18 @@ final class PageProbeModel: ObservableObject {
                 + "(booted=\(l?.booted == true ? 1 : 0) signin=\(l?.signin == true ? 1 : 0) "
                 + "activate=\(l?.activate == true ? 1 : 0))")
         } else if spec.refusal {
-            finish("KHÔNG — không thấy tín hiệu từ chối rõ trong \(spec.timeoutSeconds)s (errStreak=\(errStreak))")
+            if let sig = refusalSignal {
+                finish("ĐẠT — tín hiệu từ chối đọc được từ playability: "
+                    + "status=\(sig.status) reason='\(sig.reason)'")
+            } else {
+                await readPlayability(context: "timeout")
+                if let sig = refusalSignal {
+                    finish("ĐẠT — tín hiệu từ chối đọc được từ playability (đọc lại lúc timeout): "
+                        + "status=\(sig.status) reason='\(sig.reason)'")
+                } else {
+                    finish("KHÔNG — không thấy tín hiệu từ chối rõ trong \(spec.timeoutSeconds)s (errStreak=\(errStreak))")
+                }
+            }
         } else if playingAt == nil {
             await readPlayability(context: "timeout")
             finish("KHÔNG — không phát trong \(spec.timeoutSeconds)s "
@@ -373,6 +393,15 @@ final class PageProbeModel: ObservableObject {
             return
         }
         log(spec.tag, "playability[\(context)]: status=\(p.status) reason=\(p.reason.isEmpty ? "-" : p.reason)")
+        if p.status == "UNPLAYABLE", !p.reason.isEmpty {
+            // E-P6 fix (0.1.3): the refusal signal lives in
+            // playabilityStatus, NOT in the poll's .ytp-error
+            // text — the 0.1.1 device run read UNPLAYABLE +
+            // the members-tier reason at load yet still
+            // scored KHÔNG off the empty poll err streak.
+            // Any such read settles the refusal verdict.
+            refusalSignal = (status: p.status, reason: p.reason)
+        }
     }
 
     private func readPollX() async -> ProbePollXState? {
