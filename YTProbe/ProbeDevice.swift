@@ -44,6 +44,12 @@ final class DeviceCodeModel: ObservableObject {
     private static let tvUserAgent =
         "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)"
 
+    /// UA SmartTubeIOS dùng khi xin trang /tv — biến thể
+    /// trang phục vụ cho TV Samsung Tizen là biến thể
+    /// chứa thẻ script id="base-js".
+    private static let tizenUserAgent =
+        "Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/2.1 Chrome/56.0.2924.0 TV Safari/537.36"
+
     /// Run the client_id / client_secret patterns over one
     /// text (the /tv HTML or one JS bundle). Returns what
     /// THIS text held — values stay in the model, the log
@@ -129,45 +135,126 @@ final class DeviceCodeModel: ObservableObject {
         return clientID != nil && clientSecret != nil
     }
 
+    /// Chân 1 (chính) — công thức SmartTubeIOS nguyên bản:
+    /// xin /tv bằng UA Samsung Tizen, tìm thẻ script
+    /// id="base-js" (đường dẫn kabuki tương đối), tải
+    /// base.js, rồi áp hai pattern của Android
+    /// ClientData.java: clientId, và client_secret là
+    /// giá trị của field NGAY SAU clientId trong cùng
+    /// một object. Mọi bước đều ghi log quyết định được;
+    /// giá trị credentials không bao giờ vào log — chỉ
+    /// độ dài (path của base-js không phải credential).
+    private func scrapeBaseJS() async -> Bool {
+        guard let url = URL(string: "https://www.youtube.com/tv") else { return false }
+        var req = URLRequest(url: url)
+        req.setValue(Self.tizenUserAgent, forHTTPHeaderField: "User-Agent")
+        req.timeoutInterval = 20
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200 else {
+            log("scrape-base: tải trang /tv (UA Tizen) thất bại")
+            return false
+        }
+        let html = String(decoding: data, as: UTF8.self)
+        log("scrape-base: trang /tv (UA Tizen) tải về \(data.count) bytes")
+        guard let src = firstCapture(in: html,
+                                     pattern: #"id="base-js" src="([^"]+)""#) else {
+            log("scrape-base: KHÔNG tìm thấy thẻ base-js trong HTML")
+            return false
+        }
+        log("scrape-base: base-js TÌM THẤY — path=\(src)")
+        guard let jsURL = URL(string: "https://www.youtube.com" + src) else {
+            log("scrape-base: path base-js không dựng được URL")
+            return false
+        }
+        var jsReq = URLRequest(url: jsURL)
+        jsReq.setValue(Self.tizenUserAgent, forHTTPHeaderField: "User-Agent")
+        jsReq.timeoutInterval = 20
+        guard let (jsData, jsResponse) = try? await URLSession.shared.data(for: jsReq),
+              (jsResponse as? HTTPURLResponse)?.statusCode == 200 else {
+            log("scrape-base: tải base.js thất bại")
+            return false
+        }
+        let js = String(decoding: jsData, as: UTF8.self)
+        log("scrape-base: base.js tải về \(jsData.count) bytes")
+        if let id = firstCapture(
+            in: js,
+            pattern: #"clientId:"([-\w]+\.apps\.googleusercontent\.com)""#) {
+            if clientID == nil { clientID = id }
+            log("scrape-base: client_id TÌM THẤY trong base.js (len=\(id.count))")
+        }
+        if let secret = firstCapture(
+            in: js,
+            pattern: #"clientId:"[-\w]+\.apps\.googleusercontent\.com",\n?[$\w]+:"(\w+)""#) {
+            if clientSecret == nil { clientSecret = secret }
+            log("scrape-base: client_secret TÌM THẤY trong base.js (len=\(secret.count))")
+        }
+        if clientID == nil || clientSecret == nil {
+            log("scrape-base: base.js chưa đủ credentials "
+                + "(id=\(clientID != nil) secret=\(clientSecret != nil))")
+            return false
+        }
+        return true
+    }
+
+    /// Cả hai credentials đã có: lưu vào sandbox của app
+    /// (không bao giờ ghi log) và nêu tên chân hoàn tất.
+    private func finishScrape(completingLeg: String) {
+        UserDefaults.standard.set(clientID, forKey: "probe9.clientID")
+        UserDefaults.standard.set(clientSecret, forKey: "probe9.clientSecret")
+        verdict = "ĐẠT — đủ credentials (chân hoàn tất: \(completingLeg)). Bấm nút 2 để xin mã kích hoạt."
+        log("scrape: XONG — chân hoàn tất: \(completingLeg) — bấm nút 2 để xin mã kích hoạt")
+        log("KẾT QUẢ probe9-scrape: \(verdict)")
+    }
+
     func scrape() {
         Task {
-            log("START Probe 9 — cào credentials của TV client từ youtube.com/tv (SmartTubeIOS pattern)")
+            log("START Probe 9 — cào credentials của TV client từ youtube.com/tv (SmartTubeIOS recipe)")
+            // Chân 1 (chính): base-js theo công thức SmartTubeIOS.
+            if await scrapeBaseJS() {
+                finishScrape(completingLeg: "base-js")
+                return
+            }
+            // Chân 2 (dự phòng): patterns cũ trên HTML /tv (UA Cobalt).
             guard let url = URL(string: "https://www.youtube.com/tv") else { return }
             var req = URLRequest(url: url)
             req.setValue(Self.tvUserAgent, forHTTPHeaderField: "User-Agent")
             req.timeoutInterval = 20
             guard let (data, response) = try? await URLSession.shared.data(for: req),
                   (response as? HTTPURLResponse)?.statusCode == 200 else {
-                log("scrape: tải trang /tv thất bại")
-                verdict = "KHÔNG — không tải được trang youtube.com/tv"
+                log("scrape: tải trang /tv thất bại (chân HTML) — không có HTML cho chân bundle")
+                verdict = "KHÔNG — cả 3 chân đều không đủ credentials "
+                    + "(id=\(clientID != nil) secret=\(clientSecret != nil)): "
+                    + "base-js không xong, trang /tv không tải được (xem log)"
+                log("KẾT QUẢ probe9-scrape: \(verdict)")
                 return
             }
             let html = String(decoding: data, as: UTF8.self)
-            log("scrape: trang /tv tải về \(data.count) bytes")
+            log("scrape: trang /tv tải về \(data.count) bytes (chân HTML, UA Cobalt)")
             let htmlFound = findCredentials(in: html)
-            if let id = htmlFound.id {
+            if let id = htmlFound.id, clientID == nil {
                 clientID = id
                 log("scrape: client_id TÌM THẤY (pattern: apps.googleusercontent.com, len=\(id.count))")
             }
-            if let secret = htmlFound.secret {
+            if let secret = htmlFound.secret, clientSecret == nil {
                 clientSecret = secret
                 log("scrape: client_secret TÌM THẤY (pattern: \(htmlFound.secretLabel ?? "?"), len=\(secret.count))")
             }
-            if clientID == nil || clientSecret == nil {
-                log("scrape: KHÔNG đủ credentials trong HTML trang /tv "
-                    + "(id=\(clientID != nil) secret=\(clientSecret != nil)) — "
-                    + "cào tiếp từ các bundle JS của app TV")
-                let completed = await scrapeJSBundles(html: html)
-                if !completed {
-                    verdict = "KHÔNG — HTML và cả bundle JS đều không đủ credentials "
-                        + "(id=\(clientID != nil) secret=\(clientSecret != nil)) (xem log)"
-                    log("KẾT QUẢ probe9-scrape: \(verdict)")
-                    return
-                }
+            if clientID != nil && clientSecret != nil {
+                finishScrape(completingLeg: "HTML trang /tv")
+                return
             }
-            UserDefaults.standard.set(clientID, forKey: "probe9.clientID")
-            UserDefaults.standard.set(clientSecret, forKey: "probe9.clientSecret")
-            log("scrape: XONG — bấm nút 2 để xin mã kích hoạt")
+            // Chân 3 (dự phòng cuối): bundle JS generic (chân của 0.1.1).
+            log("scrape: KHÔNG đủ credentials trong HTML trang /tv "
+                + "(id=\(clientID != nil) secret=\(clientSecret != nil)) — "
+                + "cào tiếp từ các bundle JS của app TV")
+            let completed = await scrapeJSBundles(html: html)
+            if completed {
+                finishScrape(completingLeg: "bundle JS")
+                return
+            }
+            verdict = "KHÔNG — cả 3 chân (base-js, HTML, bundle JS) đều không đủ credentials "
+                + "(id=\(clientID != nil) secret=\(clientSecret != nil)) (xem log)"
+            log("KẾT QUẢ probe9-scrape: \(verdict)")
         }
     }
 
