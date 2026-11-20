@@ -30,7 +30,17 @@ có/không + độ dài).
    bấm **"Dùng mật khẩu thay thế"**. Thử thêm một lần với masking OFF
    nếu muốn đối chứng (đóng app mở lại để reset cửa).
 5. **Probe 11** — trang Gold sau đăng nhập (chạy sau Probe 4).
-6. Các probe còn lại (2, 2b, 2c, 6, 5, E-P2, E-P6, C-3, 10, E-P4, 8)
+6. **Probe 12** — trích xuất Gold sau đăng nhập (chạy sau Probe 4,
+   cần phiên còn sống — nếu app vừa cài lại thì chạy Probe 4 trước).
+   Bấm "Chạy ma trận Gold (6 client × cookie phiên)" và để yên cho
+   ma trận chạy hết: 6 client gọi /player cho tập Gold bằng cookie
+   của phiên (biến thể A có SAPISIDHASH, biến thể B cookie trần chỉ
+   khi A không phát được). Client nào trả HLS sẽ tự bị kiểm tra
+   media thật rồi app tự mở trình phát native thử — nếu trình phát
+   hiện lên thì để nó chạy ~10 giây rồi đóng. Cuối cùng app tự chạy
+   cột đối chứng với tập Free. Kết luận nằm ở dòng "KẾT QUẢ
+   probe12" cuối log.
+7. Các probe còn lại (2, 2b, 2c, 6, 5, E-P2, E-P6, C-3, 10, E-P4, 8)
    chạy theo thời gian cho phép — mỗi probe đều tự kết luận trong log.
 
 Sau mỗi probe (hoặc cuối buổi): tải log ở màn hình chính YT Probe và

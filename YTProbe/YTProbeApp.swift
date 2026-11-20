@@ -26,7 +26,7 @@ struct YTProbeApp: App {
 private enum ProbeRoute: Identifiable {
     case probe1, probe2, probe2b, probe2c, probe6, probe5
     case pin, extract, device9, door4, gold11, refusal
-    case oracle, botguard, pollCost, embed
+    case oracle, botguard, pollCost, embed, probe12
 
     var id: String {
         switch self {
@@ -46,6 +46,7 @@ private enum ProbeRoute: Identifiable {
         case .botguard: return "botguard"
         case .pollCost: return "pollcost"
         case .embed: return "embed"
+        case .probe12: return "probe12"
         }
     }
 }
@@ -96,6 +97,7 @@ struct ProbeRootView: View {
                     (.device9, "Probe 9 · Device-code + TVHTML5 Gold"),
                     (.door4, "Probe 4 · Cửa đăng nhập Gold"),
                     (.gold11, "Probe 11 · Trang Gold sau đăng nhập (G-2)"),
+                    (.probe12, "Probe 12 · Trích xuất Gold sau đăng nhập (ma trận có cookie)"),
                 ])
                 group("NHÓM TRANG PHIM", [
                     (.probe2, "Probe 2 · Trang desktop (Safari UA + MSE)"),
@@ -171,6 +173,7 @@ struct ProbeRootView: View {
         case .botguard: BotGuardView(onExit: exit)
         case .pollCost: PollCostView(onExit: exit)
         case .embed: PageProbeView(spec: PageProbeSpecs.embed(), onExit: exit)
+        case .probe12: AuthExtractView(onExit: exit)
         }
     }
 }

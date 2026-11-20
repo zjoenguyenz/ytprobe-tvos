@@ -1,5 +1,6 @@
 import SwiftUI
 import AVKit
+import CryptoKit
 
 // MARK: - Probes 3+7 — extraction (InnerTube client matrix)
 //
@@ -178,7 +179,8 @@ final class ProbeResolver {
     }
 
     private func postPlayer(videoID: String, client: ProbeClientSpec,
-                            visitorData: String?) async -> ([String: Any]?, Int) {
+                            visitorData: String?,
+                            extraHeaders: [String: String] = [:]) async -> ([String: Any]?, Int) {
         var clientDict: [String: Any] = [
             "clientName": client.clientName,
             "clientVersion": client.clientVersion,
@@ -214,6 +216,9 @@ final class ProbeResolver {
         req.setValue(client.userAgent, forHTTPHeaderField: "User-Agent")
         if let visitorData {
             req.setValue(visitorData, forHTTPHeaderField: "X-Goog-Visitor-Id")
+        }
+        for (field, value) in extraHeaders {
+            req.setValue(value, forHTTPHeaderField: field)
         }
         do {
             let (data, response) = try await session.data(for: req)
@@ -825,6 +830,626 @@ final class ExtractModel: ObservableObject {
             for value in dict.values { findFraction(value, into: &fraction) }
         } else if let array = node as? [Any] {
             for value in array { findFraction(value, into: &fraction) }
+        }
+    }
+}
+
+
+// MARK: - Probe 12 — authenticated extraction matrix
+//
+// The one cell never tested before (owner direction
+// 2026-11-20 13:04 CST, "triển khai triệt để"): Probes 3+7
+// proved VISIONOS extraction signed-OUT for Free; Probe 9
+// proved TVHTML5 + OAuth for Gold returns SABR-only. What
+// happens when the /player call carries the DOOR SESSION's
+// cookies (Probe 4's sign-in, living in the default website
+// data store) is unknown — this probe measures it for six
+// clients, with a media truth test behind every manifest
+// (a manifest that 403s on its first segment is the
+// PO-token wall, not a win), and an AVPlayer play proof
+// behind any survivor.
+//
+// The variable under test is AUTH, so — unlike resolve() —
+// these calls deliberately do NOT use the visitorData
+// retry: one POST per client × auth variant, attributed.
+// Cookie values, the SAPISID value and signed media URLs
+// are NEVER logged — presence, counts, hosts and HTTP
+// outcomes only.
+
+struct AuthResolveOutcome: Sendable {
+    var clientName: String = ""
+    var httpStatus: Int = -1
+    var status: String = ""
+    var reason: String = ""
+    var hlsPresent: Bool = false
+    var hlsURL: URL?
+    var formatCount: Int = 0
+    var directCount: Int = 0
+    var cipheredCount: Int = 0
+    var serverAbr: Bool = false
+    var expiresInSeconds: Int?
+    var bestDirectURL: URL?
+    var milliseconds: Int = 0
+}
+
+extension ProbeResolver {
+    /// One authenticated /player POST with the session's
+    /// auth headers attached; parses the full streamingData
+    /// shape Probe 9 used (HLS presence, direct/ciphered
+    /// counts, SABR flag, expiry). The winning URLs stay in
+    /// the outcome, in memory only.
+    func resolveAuthenticated(videoID: String, client: ProbeClientSpec,
+                              authHeaders: [String: String]) async -> AuthResolveOutcome {
+        var outcome = AuthResolveOutcome(clientName: client.name)
+        let t0 = Date()
+        let (parsed, httpStatus) = await postPlayer(
+            videoID: videoID, client: client, visitorData: nil,
+            extraHeaders: authHeaders)
+        outcome.httpStatus = httpStatus
+        outcome.milliseconds = Int(Date().timeIntervalSince(t0) * 1000)
+        guard let parsed else {
+            outcome.status = "HTTP \(httpStatus)"
+            return outcome
+        }
+        let playability = parsed["playabilityStatus"] as? [String: Any]
+        outcome.status = (playability?["status"] as? String) ?? "?"
+        outcome.reason = (playability?["reason"] as? String) ?? ""
+        let streaming = parsed["streamingData"] as? [String: Any]
+        let formats = (streaming?["formats"] as? [Any]) ?? []
+        let adaptive = (streaming?["adaptiveFormats"] as? [Any]) ?? []
+        let all = formats + adaptive
+        outcome.formatCount = all.count
+        outcome.serverAbr = streaming?["serverAbrStreamingUrl"] != nil
+        outcome.expiresInSeconds = (streaming?["expiresInSeconds"] as? NSNumber)?.intValue
+        if let hls = streaming?["hlsManifestUrl"] as? String,
+           let url = URL(string: hls) {
+            outcome.hlsPresent = true
+            outcome.hlsURL = url
+        }
+        var bestScore = -1
+        for case let format as [String: Any] in all {
+            if format["signatureCipher"] is String { outcome.cipheredCount += 1 }
+            if let direct = format["url"] as? String, let url = URL(string: direct) {
+                outcome.directCount += 1
+                let height = (format["height"] as? NSNumber)?.intValue ?? 0
+                let bitrate = (format["bitrate"] as? NSNumber)?.intValue ?? 0
+                let score = height * 10_000_000 + bitrate
+                if score > bestScore {
+                    bestScore = score
+                    outcome.bestDirectURL = url
+                }
+            }
+        }
+        return outcome
+    }
+}
+
+// MARK: Probe 12 client list
+
+/// The six-client matrix, in the brief's order. Four come
+/// from the shared ladder (hosted probe-clients.json, same
+/// source as Probes 3+7); IOS and MWEB are added from
+/// yt-dlp's public INNERTUBE_CLIENTS data (master, read
+/// 2026-11-20 — the same public dataset the ladder mirrors:
+/// its VISIONOS entry matches the ladder's verbatim). MWEB
+/// shares the WEB apiKey already carried in the ladder;
+/// IOS runs keyless, like VISIONOS in the ladder.
+enum ProbeAuthClients {
+    static func list() async -> [ProbeClientSpec] {
+        let (ladder, _) = await ProbeClientLadder.load()
+        func pick(_ name: String) -> ProbeClientSpec? {
+            ladder.first { $0.name == name }
+        }
+        let ios = ProbeClientSpec(
+            name: "IOS", clientName: "IOS", clientVersion: "21.26.4",
+            clientNumber: "5",
+            userAgent: "com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+            apiKey: nil, deviceMake: "Apple", deviceModel: "iPhone16,2",
+            osName: "iPhone", osVersion: "18.3.2.22D82",
+            androidSdkVersion: nil)
+        let mweb = ProbeClientSpec(
+            name: "MWEB", clientName: "MWEB", clientVersion: "2.20260708.05.00",
+            clientNumber: "2",
+            userAgent: "Mozilla/5.0 (iPad; CPU OS 16_7_10 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1,gzip(gfe)",
+            apiKey: pick("WEB_SAFARI")?.apiKey,
+            deviceMake: nil, deviceModel: nil,
+            osName: nil, osVersion: nil, androidSdkVersion: nil)
+        var ordered: [ProbeClientSpec] = []
+        for name in ["VISIONOS", "IOS", "ANDROID_VR", "MWEB", "WEB_SAFARI", "TVHTML5"] {
+            if name == "IOS" { ordered.append(ios) }
+            else if name == "MWEB" { ordered.append(mweb) }
+            else if let spec = pick(name) { ordered.append(spec) }
+        }
+        return ordered
+    }
+}
+
+// MARK: Probe 12 session read
+
+/// The door session, read from the SAME store the door
+/// writes to: JoeWebBridge.fetchAllCookies reads the
+/// default website data store's cookie store (see
+/// JoeWebBridge.h — "Every cookie in the default store"),
+/// which is the store Probe 4's WebView signs into and
+/// ProbeSession.fetchPresence reads for Probe 11's
+/// signedIn. Snapshots are Sendable BY CONSTRUCTION — the
+/// bridge's dictionaries are mapped inside its completion,
+/// the JoeTV run #16/#17 pattern ProbeSession uses.
+private struct SessionCookieSnapshot: Sendable {
+    var name: String
+    var value: String
+    var domain: String
+}
+
+enum ProbeAuthSession {
+    static func fetchCookies() async -> [SessionCookieSnapshot] {
+        await withCheckedContinuation {
+            (cont: CheckedContinuation<[SessionCookieSnapshot], Never>) in
+            JoeWebBridge.fetchAllCookies { entries in
+                cont.resume(returning: entries.compactMap { entry in
+                    guard let name = entry["name"] as? String,
+                          let value = entry["value"] as? String,
+                          let domain = entry["domain"] as? String
+                    else { return nil }
+                    return SessionCookieSnapshot(name: name, value: value, domain: domain)
+                })
+            }
+        }
+    }
+
+    /// The session's auth material, in memory only: the
+    /// Cookie header (youtube/google domains, the
+    /// ProbeSession.cookieHeader filter) + the SAPISID
+    /// value the hash is derived from. Nil when there is
+    /// no session (no SAPISID) — the caller fails closed.
+    static func authMaterial() async -> (cookieHeader: String, sapisid: String, count: Int)? {
+        let cookies = await fetchCookies()
+        let mine = cookies.filter {
+            $0.domain.contains("youtube.com") || $0.domain.contains("google.com")
+        }
+        guard let sapisid = mine.first(where: { $0.name == "SAPISID" })?.value
+        else { return nil }
+        return (mine.map { "\($0.name)=\($0.value)" }.joined(separator: "; "),
+                sapisid, mine.count)
+    }
+
+    /// SAPISIDHASH, the web session's Authorization header:
+    /// "SAPISIDHASH <ts>_<sha1hex(ts + ' ' + SAPISID + ' ' +
+    /// origin)>". SHA1 comes from CryptoKit's Insecure.SHA1
+    /// (CryptoKit framework — CryptoKit has no plain SHA1;
+    /// the Insecure namespace carries it). Only the fact
+    /// that the header was attached is ever logged.
+    static func sapisidHash(sapisid: String,
+                            origin: String = "https://www.youtube.com") -> String {
+        let ts = Int(Date().timeIntervalSince1970)
+        let digest = Insecure.SHA1.hash(data: Data("\(ts) \(sapisid) \(origin)".utf8))
+        let hex = digest.map { String(format: "%02x", Int($0)) }.joined()
+        return "SAPISIDHASH \(ts)_\(hex)"
+    }
+}
+
+
+// MARK: - Probe 12 screen
+
+@MainActor
+final class AuthExtractModel: ObservableObject {
+    @Published var lines: [String] = []
+    @Published var verdict: String = ""
+    @Published private(set) var running = false
+    private let resolver = ProbeResolver()
+    private var prepared = false
+
+    func log(_ line: String) {
+        DiagLog.write("probe12", line)
+        lines.append(line)
+    }
+
+    func prepare(player: ExtractPlayerModel) {
+        guard !prepared else { return }
+        prepared = true
+        player.onEvent = { [weak self] line in self?.lines.append(line) }
+    }
+
+    func run(player: ExtractPlayerModel) {
+        guard !running else { return }
+        running = true
+        verdict = ""
+        Task {
+            await runMatrix(player: player)
+            running = false
+        }
+    }
+
+    private func runMatrix(player: ExtractPlayerModel) async {
+        log("START Probe 12 — trích xuất Gold CÓ đăng nhập (ma trận 6 client × cookie phiên)")
+        // Same restore path the door itself uses, so a
+        // store emptied by an app relaunch is refilled from
+        // the session mirror before we judge presence.
+        await ProbeSession.shared.ensureSession()
+        guard let auth = await ProbeAuthSession.authMaterial() else {
+            verdict = "NO SESSION — chạy Probe 4 trước"
+            log("session: KHÔNG có cookie phiên (thiếu SAPISID trong store) — "
+                + "DỪNG, fail closed. \(verdict)")
+            log("KẾT QUẢ probe12: \(verdict)")
+            return
+        }
+        let hash = ProbeAuthSession.sapisidHash(sapisid: auth.sapisid)
+        log("session: có \(auth.count) cookie (youtube/google), SAPISID present — "
+            + "biến thể A = Cookie + SAPISIDHASH (đã gắn, giá trị không ghi log); "
+            + "biến thể B = Cookie trần (chỉ chạy khi A không phát được)")
+        let headersA = ["Cookie": auth.cookieHeader, "Authorization": hash]
+        let headersB = ["Cookie": auth.cookieHeader]
+        let clients = await ProbeAuthClients.list()
+        log("ma trận: \(clients.map { "\($0.name)@\($0.clientVersion)" }.joined(separator: ", "))")
+
+        var winner: (client: String, variant: String, url: URL)?
+        var walls: [(client: String, wall: String)] = []
+        for client in clients {
+            let result = await runClient(
+                videoID: ProbeTargets.goldEp1, client: client,
+                headersA: headersA, headersB: headersB, label: "gold")
+            if let w = result.winner, winner == nil {
+                winner = (client.name, w.variant, w.url)
+            }
+            if !result.playable {
+                walls.append((client.name, result.wall))
+            }
+        }
+
+        if let winner {
+            log("gold: media truth test ĐẠT đầu tiên ở \(winner.client) [\(winner.variant)] — "
+                + "chuyển sang play proof bằng AVPlayer")
+            let proof = await playProof(url: winner.url, player: player)
+            if proof.ok {
+                verdict = "ĐẠT — GOLD NATIVE VIA \(winner.client) [\(winner.variant)]"
+                log("GOLD NATIVE VIA \(winner.client) — first frame \(proof.firstFrameMs) ms, "
+                    + "playback advance +\(String(format: "%.1f", proof.advanced))s")
+            } else {
+                verdict = "MỘT PHẦN — \(winner.client) qua media test nhưng AVPlayer không phát tiếp được"
+                log("play proof: AVPlayer KHÔNG phát tiếp được HLS của \(winner.client) "
+                    + "(first frame \(proof.firstFrameMs) ms, advance +\(String(format: "%.1f", proof.advanced))s)")
+            }
+        } else {
+            verdict = "KHÔNG — không client nào cho media Gold phát được"
+            log("gold: bảng tường — mỗi client chết ở đâu:")
+            for entry in walls {
+                log("gold \(entry.client): TƯỜNG = \(entry.wall)")
+            }
+        }
+        log("KẾT QUẢ probe12-gold: \(verdict)")
+
+        // Control column: the same cookies against the
+        // FREE episode, variant A only, one line per client
+        // — separates a Gold-only refusal from broken auth.
+        log("control: cùng phiên, tập FREE \(ProbeTargets.freeEp1) (biến thể A)")
+        for client in clients {
+            let outcome = await resolver.resolveAuthenticated(
+                videoID: ProbeTargets.freeEp1, client: client, authHeaders: headersA)
+            var extra = ""
+            if outcome.hlsPresent, let url = outcome.hlsURL {
+                let peek = await manifestPeek(url)
+                extra = " · manifest HTTP \(peek.http)\(peek.isMaster ? " (master)" : "")"
+            }
+            log("control-free \(client.name) [A]: HTTP \(outcome.httpStatus) "
+                + "playability=\(outcome.status) "
+                + "reason=\(outcome.reason.isEmpty ? "-" : outcome.reason) "
+                + "hls=\(outcome.hlsPresent ? "YES" : "no") formats=\(outcome.formatCount)\(extra)")
+        }
+        log("KẾT QUẢ probe12: \(verdict)")
+    }
+
+    /// One client against one video, variant A then (only
+    /// if A produced nothing playable) variant B. Returns
+    /// whether anything playable came back, the winning
+    /// HLS if any, and the wall description otherwise.
+    private func runClient(videoID: String, client: ProbeClientSpec,
+                           headersA: [String: String], headersB: [String: String],
+                           label: String) async
+        -> (playable: Bool, winner: (variant: String, url: URL)?, wall: String) {
+        let a = await resolver.resolveAuthenticated(
+            videoID: videoID, client: client, authHeaders: headersA)
+        logResolve(a, variant: "A cookie+hash", label: label)
+        let aMedia = await mediaStep(a, label: label, variant: "A")
+        if aMedia.playable {
+            if a.hlsPresent, let url = a.hlsURL {
+                return (true, ("A", url), "")
+            }
+            return (true, nil, "")
+        }
+        let b = await resolver.resolveAuthenticated(
+            videoID: videoID, client: client, authHeaders: headersB)
+        logResolve(b, variant: "B cookie-only", label: label)
+        let bMedia = await mediaStep(b, label: label, variant: "B")
+        if bMedia.playable {
+            if b.hlsPresent, let url = b.hlsURL {
+                return (true, ("B", url), "")
+            }
+            return (true, nil, "")
+        }
+        return (false, nil, bMedia.wall.isEmpty ? aMedia.wall : bMedia.wall)
+    }
+
+    private func logResolve(_ o: AuthResolveOutcome, variant: String, label: String) {
+        var line = "\(label) \(o.clientName) [\(variant)]: HTTP \(o.httpStatus) "
+            + "playability=\(o.status) "
+            + "reason=\(o.reason.isEmpty ? "-" : o.reason) "
+            + "hls=\(o.hlsPresent ? "YES" : "no") formats=\(o.formatCount) "
+            + "direct=\(o.directCount) ciphered=\(o.cipheredCount) "
+            + "serverAbr=\(o.serverAbr ? "YES" : "no")"
+        if let expires = o.expiresInSeconds { line += " expires≈\(expires)s" }
+        line += " · \(o.milliseconds)ms"
+        log(line)
+    }
+
+    /// The media truth test behind one resolve outcome.
+    /// Nothing to test (no HLS, no direct URL) is a wall,
+    /// described from the resolve itself.
+    private func mediaStep(_ o: AuthResolveOutcome, label: String, variant: String) async
+        -> (playable: Bool, wall: String) {
+        if o.hlsPresent, let url = o.hlsURL {
+            let test = await testHLS(url)
+            log("\(label) \(o.clientName) [\(variant)] media: \(test.note)")
+            return (test.ok, test.ok ? "" : test.note)
+        }
+        if let direct = o.bestDirectURL {
+            let test = await testDirect(direct)
+            log("\(label) \(o.clientName) [\(variant)] media: \(test.note)")
+            return (test.ok, test.ok ? "" : test.note)
+        }
+        let wall: String
+        if o.status != "OK" {
+            wall = "playability=\(o.status) \(o.reason)".trimmingCharacters(in: .whitespaces)
+        } else if o.serverAbr {
+            wall = "playability OK nhưng SABR-only (serverAbr, không HLS, direct=\(o.directCount) ciphered=\(o.cipheredCount))"
+        } else {
+            wall = "playability OK nhưng không HLS, không direct URL (ciphered=\(o.cipheredCount))"
+        }
+        return (false, wall)
+    }
+
+    // MARK: Media truth test — HLS
+
+    /// GET the manifest, then the first media segment of
+    /// the top variant (highest BANDWIDTH). Cookieless, in
+    /// the exact shape AVPlayer would fetch it — that is
+    /// the production question. A 403 anywhere is logged
+    /// as the PO-token wall.
+    private func testHLS(_ manifestURL: URL) async -> (ok: Bool, note: String) {
+        guard let manifest = await fetchText(manifestURL) else {
+            return (false, "manifest GET thất bại (mạng)")
+        }
+        if manifest.http == 403 {
+            return (false, "manifest HTTP 403 — PO-token wall (media từ chối khi không có PO token)")
+        }
+        guard manifest.http == 200, let text = manifest.text else {
+            return (false, "manifest HTTP \(manifest.http)")
+        }
+        let lines = text.split(separator: "\n").map(String.init)
+        var variantCount = 0
+        var topBandwidth = -1
+        var topResolution = "-"
+        var topURI: String?
+        var pendingAttrs: (bw: Int, res: String)?
+        for raw in lines {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("#EXT-X-STREAM-INF:") {
+                variantCount += 1
+                let attrs = line.dropFirst("#EXT-X-STREAM-INF:".count)
+                var bw = 0
+                var res = "-"
+                for part in attrs.split(separator: ",") {
+                    let kv = part.split(separator: "=", maxSplits: 1)
+                    guard kv.count == 2 else { continue }
+                    if kv[0] == "BANDWIDTH" { bw = Int(kv[1]) ?? 0 }
+                    if kv[0] == "RESOLUTION" { res = String(kv[1]) }
+                }
+                pendingAttrs = (bw, res)
+            } else if !line.hasPrefix("#"), !line.isEmpty, let attrs = pendingAttrs {
+                if attrs.bw > topBandwidth {
+                    topBandwidth = attrs.bw
+                    topResolution = attrs.res
+                    topURI = line
+                }
+                pendingAttrs = nil
+            }
+        }
+        let head = "manifest HTTP 200 · \(manifest.bytes)B"
+        if variantCount > 0, let uri = topURI,
+           let variantURL = URL(string: uri, relativeTo: manifestURL)?.absoluteURL {
+            let seg = await firstSegment(of: variantURL)
+            if seg.ok {
+                return (true, "\(head) · variants=\(variantCount) top=\(topResolution) bw=\(topBandwidth) · \(seg.note)")
+            }
+            return (false, "\(head) · variants=\(variantCount) top=\(topResolution) bw=\(topBandwidth) · \(seg.note)")
+        }
+        // No variant list: the manifest IS the media
+        // playlist — test its own first segment.
+        let seg = await firstSegment(of: manifestURL, text: text)
+        if seg.ok {
+            return (true, "\(head) · media playlist trực tiếp · \(seg.note)")
+        }
+        return (false, "\(head) · media playlist trực tiếp · \(seg.note)")
+    }
+
+    /// Resolve a variant playlist's first media segment
+    /// and GET it, logging HTTP + byte count.
+    private func firstSegment(of playlistURL: URL, text knownText: String? = nil) async
+        -> (ok: Bool, note: String) {
+        let text: String
+        if let knownText {
+            text = knownText
+        } else {
+            guard let fetched = await fetchText(playlistURL) else {
+                return (false, "variant playlist GET thất bại (mạng)")
+            }
+            if fetched.http == 403 {
+                return (false, "variant playlist HTTP 403 — PO-token wall")
+            }
+            guard fetched.http == 200, let body = fetched.text else {
+                return (false, "variant playlist HTTP \(fetched.http)")
+            }
+            text = body
+        }
+        for raw in text.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.hasPrefix("#"), !line.isEmpty else { continue }
+            guard let segURL = URL(string: line, relativeTo: playlistURL)?.absoluteURL
+            else { return (false, "segment URI không parse được") }
+            var req = URLRequest(url: segURL)
+            req.timeoutInterval = 20
+            do {
+                let (data, response) = try await URLSession.shared.data(for: req)
+                let http = (response as? HTTPURLResponse)?.statusCode ?? -1
+                if http == 403 {
+                    return (false, "segment HTTP 403 — PO-token wall (manifest cho qua, media bị chặn)")
+                }
+                if http == 200, !data.isEmpty {
+                    return (true, "segment HTTP 200 · \(data.count)B → MEDIA OK")
+                }
+                return (false, "segment HTTP \(http) · \(data.count)B")
+            } catch {
+                return (false, "segment GET thất bại (mạng)")
+            }
+        }
+        return (false, "playlist không có segment nào")
+    }
+
+    private func fetchText(_ url: URL) async -> (http: Int, bytes: Int, text: String?)? {
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 15
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            let http = (response as? HTTPURLResponse)?.statusCode ?? -1
+            return (http, data.count, String(decoding: data, as: UTF8.self))
+        } catch {
+            return nil
+        }
+    }
+
+    private func manifestPeek(_ url: URL) async -> (http: Int, isMaster: Bool) {
+        guard let fetched = await fetchText(url) else { return (-1, false) }
+        return (fetched.http, fetched.text?.contains("#EXT-X-STREAM-INF") ?? false)
+    }
+
+    // MARK: Media truth test — direct formats
+
+    /// Range-GET the best direct format URL (bytes
+    /// 0-1023 asked; the read is capped so a server that
+    /// ignores Range cannot pull a whole file into the
+    /// probe). A 403 is the PO-token wall.
+    private func testDirect(_ url: URL) async -> (ok: Bool, note: String) {
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 15
+        req.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
+        do {
+            let (bytes, response) = try await URLSession.shared.bytes(for: req)
+            let http = (response as? HTTPURLResponse)?.statusCode ?? -1
+            if http == 403 {
+                return (false, "direct format HTTP 403 — PO-token wall")
+            }
+            var count = 0
+            for try await _ in bytes {
+                count += 1
+                if count >= 65_536 { break }
+            }
+            let ok = (http == 200 || http == 206) && count > 0
+            return (ok, "direct format HTTP \(http) · đọc \(count)B (range 0-1023)"
+                + (ok ? " → MEDIA OK" : ""))
+        } catch {
+            return (false, "direct format GET thất bại (mạng)")
+        }
+    }
+
+    // MARK: Play proof
+
+    /// Hand the winning manifest to the same AVPlayer
+    /// plumbing Probe 3+7 proved for Free, and measure:
+    /// first frame (wall clock from the play call to the
+    /// player actually playing a ready item) and whether
+    /// the playhead then advances ≥ 3 s.
+    private func playProof(url: URL, player: ExtractPlayerModel) async
+        -> (ok: Bool, firstFrameMs: Int, advanced: Double) {
+        let t0 = Date()
+        player.play(url: url, videoID: ProbeTargets.goldEp1, mode: "queue")
+        var firstFrameMs = -1
+        var startTime: Double?
+        let deadline = Date().addingTimeInterval(25)
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            let queue = player.player
+            if firstFrameMs < 0,
+               queue.timeControlStatus == .playing,
+               let item = queue.currentItem, item.status == .readyToPlay {
+                firstFrameMs = Int(Date().timeIntervalSince(t0) * 1000)
+                startTime = queue.currentTime().seconds
+            }
+            if let start = startTime {
+                let now = queue.currentTime().seconds
+                if now.isFinite, now - start >= 3 {
+                    return (true, firstFrameMs, now - start)
+                }
+            }
+        }
+        let advanced = startTime.map { player.player.currentTime().seconds - $0 } ?? 0
+        return (false, firstFrameMs, advanced.isFinite ? advanced : 0)
+    }
+}
+
+struct AuthExtractView: View {
+    let onExit: () -> Void
+    @StateObject private var model = AuthExtractModel()
+    @StateObject private var playerModel = ExtractPlayerModel()
+
+    var body: some View {
+        VStack(spacing: 16) {
+            HStack(alignment: .top, spacing: 30) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Probe 12 — Trích xuất Gold sau đăng nhập")
+                        .font(.system(size: 34, weight: .bold))
+                    Text("Chạy SAU Probe 4 (cần phiên đăng nhập còn sống). Ma trận 6 client gọi /player cho tập Gold \(ProbeTargets.goldEp1) BẰNG cookie của phiên: biến thể A = Cookie + SAPISIDHASH, biến thể B = Cookie trần (chỉ khi A không phát được). Client nào trả HLS sẽ bị kiểm tra media thật (manifest + segment đầu) rồi phát thử bằng AVPlayer. Cuối cùng chạy cột đối chứng: cùng phiên với tập Free.")
+                        .font(.system(size: 22))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: 1000, alignment: .leading)
+                }
+                Spacer()
+                if !model.verdict.isEmpty {
+                    Text(model.verdict)
+                        .font(.system(size: 26, weight: .heavy))
+                        .foregroundStyle(model.verdict.contains("KHÔNG") || model.verdict.contains("NO SESSION") ? .red : .green)
+                        .frame(maxWidth: 640, alignment: .trailing)
+                }
+            }
+            HStack(spacing: 16) {
+                Button("Chạy ma trận Gold (6 client × cookie phiên)") {
+                    model.run(player: playerModel)
+                }
+                .disabled(model.running)
+            }
+            .font(.system(size: 24, weight: .semibold))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(model.lines.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(size: 20, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+        .padding(50)
+        .onExitCommand { onExit() }
+        .task { model.prepare(player: playerModel) }
+        .fullScreenCover(isPresented: $playerModel.presented) {
+            ZStack(alignment: .topTrailing) {
+                NativePlayerView(player: playerModel.player)
+                    .ignoresSafeArea()
+                HStack(spacing: 16) {
+                    Button("Đóng") { playerModel.dismiss() }
+                }
+                .font(.system(size: 24, weight: .semibold))
+                .padding(40)
+            }
         }
     }
 }
