@@ -52,8 +52,9 @@ jobs:
           rm -rf "$STAGE"
           mkdir -p "$STAGE/Payload"
           cp -R "$APP_PATH" "$STAGE/Payload/"
-          (cd "$STAGE" && /usr/bin/zip -qry "$PWD/YTProbe.ipa" Payload)
-          ls -la "$PWD/YTProbe.ipa"
+          OUT="$PWD/YTProbe.ipa"
+          (cd "$STAGE" && /usr/bin/zip -qry "$OUT" Payload)
+          ls -la "$OUT"
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
