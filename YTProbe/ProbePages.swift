@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import MediaPlayer
 import AVFoundation
 
@@ -31,6 +32,14 @@ struct PageProbeSpec {
     var nextVideoID: String? = nil
     var oscilloscope: Bool = false
     var nowPlaying: Bool = false
+    /// 0.1.5 (Probe 11 / G-2 only): the remote-forwarding
+    /// cell — the page player is hosted by a dedicated view
+    /// controller that catches the Siri Remote Play/Pause
+    /// press on two UIKit paths (gesture recognizer +
+    /// pressesBegan) and forwards it to togglePlay. Every
+    /// other page probe keeps the existing window-consumer
+    /// behaviour untouched.
+    var remoteForwarding: Bool = false
     var timeoutSeconds: Int = 60
     var provenance: String = ""
     var videoID: String = ""
@@ -60,6 +69,16 @@ final class PageProbeModel: ObservableObject {
     private var userToggledPause = false
     private var lastPressAt: Date?
     private var qualitySet = false
+    /// 0.1.5 remote-forwarding cell state (Probe 11 only):
+    /// the last ACCEPTED forwarded press (the dedupe clock)
+    /// and a one-shot install log guard.
+    private var lastRemoteForwardAt: Date?
+    private var remoteForwardInstallLogged = false
+    /// The hosting controller can report its install before
+    /// start() has set the spec (makeUIViewController vs
+    /// .task ordering); the ARMED line is then deferred to
+    /// start() instead of being lost.
+    private var remoteForwardInstallPending = false
 
     func log(_ tag: String, _ line: String) {
         DiagLog.write(tag, line)
@@ -82,7 +101,25 @@ final class PageProbeModel: ObservableObject {
             finish("KHÔNG — bridge WebKit không khả dụng trên bản tvOS này")
             return
         }
-        registerPressConsumer()
+        if spec.remoteForwarding {
+            // The window-level consumer swallows ENDED
+            // presses inside -[UIWindow sendEvent:] BEFORE
+            // UIKit dispatch, which would starve BOTH paths
+            // this cell exists to test (gesture recognizer
+            // and pressesBegan). It is therefore deliberately
+            // NOT registered for Probe 11; the install log
+            // line lands when the hosting controller reports
+            // its two paths armed (noteRemoteForwardInstalled).
+            log(tag, "remote forwarding cell: window consumer NOT registered "
+                + "for this probe — gesture + pressesBegan paths own Play/Pause")
+            if remoteForwardInstallPending {
+                remoteForwardInstallPending = false
+                remoteForwardInstallLogged = true
+                logRemoteForwardArmed()
+            }
+        } else {
+            registerPressConsumer()
+        }
         controller.onFinishLoad = { [weak self] in
             guard let self else { return }
             self.log(tag, "load finished")
@@ -404,6 +441,20 @@ final class PageProbeModel: ObservableObject {
         }
     }
 
+    /// One direct read of the SAME poll payload the poll
+    /// timer runs (ProbeJS.poll) — the remote-forwarding
+    /// cell reads state through it before/after a forwarded
+    /// press, so its verdict never depends on the timer's
+    /// phase (the cell must still answer after finish() has
+    /// stopped the timer while the player stays on screen).
+    private func readPollState() async -> ProbePollState? {
+        let result = await evaluateAwait(ProbeJS.poll)
+        guard let result,
+              let data = result.data(using: .utf8)
+        else { return nil }
+        return try? JSONDecoder().decode(ProbePollState.self, from: data)
+    }
+
     private func readPollX() async -> ProbePollXState? {
         let result = await evaluateAwait(ProbeJS.pollX)
         guard let result,
@@ -447,6 +498,104 @@ final class PageProbeModel: ObservableObject {
                 return false
             }
         }
+    }
+
+    // MARK: 0.1.5 — Remote Play/Pause forwarding cell (Probe 11 / G-2 only)
+    //
+    // The question this cell answers, from the log alone:
+    // can the APP catch the Siri Remote's Play/Pause press
+    // and forward it into the page player? Two UIKit catch
+    // paths are armed by the hosting view controller
+    // (G2WebHostController below): a UITapGestureRecognizer
+    // restricted to the playPause press type on the web
+    // view's container, and a pressesBegan override on the
+    // controller itself. Either path lands here; the press
+    // is timestamped with its source, the page state is read
+    // through the existing poll payload, the EXISTING
+    // togglePlay JS is evaluated, and follow-up poll reads
+    // confirm whether the state actually flipped. If both
+    // paths fire for one physical press, the second is
+    // deduped inside 800 ms and logged as such — never a
+    // double toggle.
+
+    /// Called by the hosting controller once both catch
+    /// paths are installed (one-shot log; deferred to
+    /// start() when the controller wins the race).
+    func noteRemoteForwardInstalled() {
+        guard !remoteForwardInstallLogged else { return }
+        guard let spec, spec.remoteForwarding else {
+            remoteForwardInstallPending = true
+            return
+        }
+        remoteForwardInstallLogged = true
+        logRemoteForwardArmed()
+    }
+
+    private func logRemoteForwardArmed() {
+        log(spec?.tag ?? "probe11",
+            "remote forwarding: ARMED — path A: UITapGestureRecognizer "
+            + "allowedPressTypes=[playPause] on the web-view container; "
+            + "path B: pressesBegan override on the hosting view controller")
+    }
+
+    /// Entry point for BOTH catch paths. Play/Pause only —
+    /// no other press type is ever forwarded by this cell.
+    func handleRemotePlayPause(source: String) {
+        guard let spec, spec.remoteForwarding else { return }
+        let now = Date()
+        let stamp = ISO8601DateFormatter().string(from: now)
+        if let last = lastRemoteForwardAt,
+           now.timeIntervalSince(last) < 0.8 {
+            log(spec.tag, "remote press source=\(source) at \(stamp): DEDUPED — "
+                + "\(Int(now.timeIntervalSince(last) * 1000)) ms after the accepted "
+                + "press (<800 ms); NO second toggle")
+            return
+        }
+        lastRemoteForwardAt = now
+        log(spec.tag, "remote press source=\(source) playPause caught at \(stamp) "
+            + "— forwarding to togglePlay")
+        Task { [weak self] in
+            await self?.forwardRemotePlayPause(source: source, stamp: stamp)
+        }
+    }
+
+    private func forwardRemotePlayPause(source: String, stamp: String) async {
+        guard let spec else { return }
+        let before = await readPollState() ?? lastState
+        log(spec.tag, "remote press source=\(source) caught=\(stamp) "
+            + "state before=\(Self.pollLabel(before))")
+        controller.evaluate(ProbeJS.togglePlay)
+        var after: ProbePollState?
+        var flipped = false
+        for _ in 0..<6 {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard let state = await readPollState() else { continue }
+            after = state
+            if let before, (state.playing != before.playing
+                || state.paused != before.paused) {
+                flipped = true
+                break
+            }
+            if before == nil, state.playing || state.paused {
+                break
+            }
+        }
+        if let before, let after, flipped {
+            log(spec.tag, "remote press source=\(source): CONFIRMED by poll — "
+                + "play state \(Self.pollLabel(before)) -> \(Self.pollLabel(after))")
+        } else {
+            log(spec.tag, "remote press source=\(source): NOT CONFIRMED by poll — "
+                + "play state \(Self.pollLabel(before)) -> \(Self.pollLabel(after)) "
+                + "(no flip observed in ~3 s)")
+        }
+    }
+
+    private static func pollLabel(_ state: ProbePollState?) -> String {
+        guard let state else { return "unknown" }
+        if state.playing { return "playing" }
+        if state.paused { return "paused" }
+        if state.ended { return "ended" }
+        return "state=\(state.state)"
     }
 
     // MARK: Team B-3 (SPECULATION): Now Playing piggyback
@@ -518,13 +667,32 @@ struct PageProbeView: View {
                         .frame(maxWidth: 700, alignment: .trailing)
                 }
             }
-            ProbeWebView(controller: model.controller,
-                         navigationMode: spec.locked ? .playerLockdown : .doorRoam,
-                         playbackPresses: true,
-                         mediaSourceSwitch: spec.mse,
-                         contentModeDesktop: spec.contentMode)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.black)
+            Group {
+                if spec.remoteForwarding {
+                    // Probe 11 / G-2 (0.1.5): the dedicated
+                    // hosting view controller that arms the
+                    // gesture + pressesBegan catch paths.
+                    G2ProbeWebView(
+                        controller: model.controller,
+                        navigationMode: spec.locked ? .playerLockdown : .doorRoam,
+                        mediaSourceSwitch: spec.mse,
+                        contentModeDesktop: spec.contentMode,
+                        onPlayPause: { source in
+                            model.handleRemotePlayPause(source: source)
+                        },
+                        onInstalled: {
+                            model.noteRemoteForwardInstalled()
+                        })
+                } else {
+                    ProbeWebView(controller: model.controller,
+                                 navigationMode: spec.locked ? .playerLockdown : .doorRoam,
+                                 playbackPresses: true,
+                                 mediaSourceSwitch: spec.mse,
+                                 contentModeDesktop: spec.contentMode)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black)
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(model.screenLines.enumerated()), id: \.offset) { _, line in
                     Text(line)
@@ -539,6 +707,127 @@ struct PageProbeView: View {
         .onExitCommand { onExit() }
         .task { model.start(spec: spec) }
         .onDisappear { model.stop() }
+    }
+}
+
+// MARK: - Probe 11 / G-2 hosting controller (0.1.5 remote-forwarding cell)
+//
+// A dedicated UIViewController host for the G-2 web view,
+// existing for exactly one reason: it is a responder-chain
+// station ABOVE the web view's content view, so it can
+// catch the Siri Remote's Play/Pause press two ways —
+//   A. a UITapGestureRecognizer whose allowedPressTypes is
+//      restricted to UIPress.PressType.playPause, attached
+//      to the web view's container (the JoeWebHostView);
+//   B. a pressesBegan(_:with:) override that intercepts
+//      .playPause and does NOT call super for that type.
+// Both report to the model's handleRemotePlayPause, which
+// owns the dedupe, the togglePlay forwarding and the poll
+// confirmation. No other press type is touched.
+
+struct G2ProbeWebView: UIViewControllerRepresentable {
+    let controller: ProbeWebController
+    let navigationMode: JoeWebNavigationMode
+    let mediaSourceSwitch: Bool
+    let contentModeDesktop: Bool
+    let onPlayPause: @MainActor (String) -> Void
+    let onInstalled: @MainActor () -> Void
+
+    func makeUIViewController(context: Context) -> G2WebHostController {
+        let host = (mediaSourceSwitch || contentModeDesktop)
+            ? JoeWebHostView(mediaSourceSwitch: mediaSourceSwitch,
+                             contentModeDesktop: contentModeDesktop)
+            : JoeWebHostView(frame: .zero)
+        host.navigationMode = navigationMode
+        host.playbackPressesEnabled = true
+        host.pageFocusEnabled = false
+        host.delegate = controller
+        controller.host = host
+        let vc = G2WebHostController()
+        vc.onPlayPause = onPlayPause
+        vc.onInstalled = onInstalled
+        vc.install(host: host)
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: G2WebHostController,
+                                context: Context) {
+        uiViewController.onPlayPause = onPlayPause
+        uiViewController.onInstalled = onInstalled
+    }
+
+    static func dismantleUIViewController(
+        _ uiViewController: G2WebHostController, coordinator: ()
+    ) {
+        uiViewController.hostView?.stopPolling()
+        uiViewController.hostView?.delegate = nil
+    }
+}
+
+final class G2WebHostController: UIViewController {
+    var onPlayPause: (@MainActor (String) -> Void)?
+    var onInstalled: (@MainActor () -> Void)?
+    private(set) var hostView: JoeWebHostView?
+    private var playPauseGesture: UITapGestureRecognizer?
+
+    /// Attach the host view and arm catch path A (the
+    /// gesture recognizer). Called once, from make.
+    func install(host: JoeWebHostView) {
+        hostView = host
+        let gesture = UITapGestureRecognizer(
+            target: self,
+            action: #selector(handlePlayPauseGesture(_:)))
+        gesture.allowedPressTypes = [
+            NSNumber(value: UIPress.PressType.playPause.rawValue)
+        ]
+        host.addGestureRecognizer(gesture)
+        playPauseGesture = gesture
+        if isViewLoaded { attachHost() }
+        // UIKit invokes this controller on the main thread;
+        // assumeIsolated is the codebase's pattern for
+        // crossing into the @MainActor model from UIKit
+        // callbacks (same as the window press consumer).
+        MainActor.assumeIsolated { onInstalled?() }
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        attachHost()
+    }
+
+    private func attachHost() {
+        guard let hostView, hostView.superview !== view else { return }
+        hostView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(hostView)
+        NSLayoutConstraint.activate([
+            hostView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            hostView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            hostView.topAnchor.constraint(equalTo: view.topAnchor),
+            hostView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+    }
+
+    // Catch path A: the gesture recognizer fires when the
+    // Play/Pause press completes (state .ended).
+    @objc private func handlePlayPauseGesture(
+        _ recognizer: UITapGestureRecognizer
+    ) {
+        guard recognizer.state == .ended else { return }
+        MainActor.assumeIsolated { onPlayPause?("gesture") }
+    }
+
+    // Catch path B: the responder-chain override. A set
+    // containing a Play/Pause press is intercepted here and
+    // super is NOT called for it; any other press set is
+    // delivered untouched.
+    override func pressesBegan(_ presses: Set<UIPress>,
+                               with event: UIPressesEvent?) {
+        guard presses.contains(where: { $0.type == .playPause }) else {
+            super.pressesBegan(presses, with: event)
+            return
+        }
+        MainActor.assumeIsolated { onPlayPause?("pressesBegan") }
     }
 }
 
@@ -850,7 +1139,7 @@ enum PageProbeSpecs {
             url: ProbeTargets.goldWatchURL(ProbeTargets.goldEp1),
             userAgent: ProbeJS.safariUA, uaLabel: "safari-desktop",
             mse: true, contentMode: false, locked: true, cssOnPlay: true,
-            experience: true,
+            experience: true, remoteForwarding: true,
             provenance: "dữ liệu playlist có sẵn (tvb-yt.json)",
             videoID: ProbeTargets.goldEp1)
     }
