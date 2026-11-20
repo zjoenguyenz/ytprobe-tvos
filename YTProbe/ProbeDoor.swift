@@ -29,6 +29,17 @@ import SwiftUI
 //   (transitions only), and a native code field appears if
 //   a code input shows. Codes are never logged — the log
 //   records the code's LENGTH only
+// - 0.1.4 deltas (from the full 0.1.3 device log): the
+//   chooser scan ALSO runs at the challenge step itself
+//   (the challenge list carries an SMS row — "Get a
+//   verification code at …12" — that the post-expansion
+//   list no longer shows), buttons are built from the
+//   UNION of all scans, and the legacy password-method
+//   retry loop is silenced once a chooser inventory has
+//   been captured. The row click is v2: it walks up from
+//   the text match to the element Google's handler
+//   listens on and fires a full press sequence, with one
+//   retry on the row's first interactive descendant
 
 /// One detected row of Google's 2-Step Verification
 /// chooser. `needles` are tried in order for the JS click;
@@ -55,6 +66,7 @@ final class ProbeDoorModel: ObservableObject {
     private var started = false
     private var lastStep = ""
     private var challengeInventoried = false
+    private var chooserInventoried = false
     private var passwordMethodArmed = false
     private var passwordMethodTries = 0
     private var chooserWatchTask: Task<Void, Never>?
@@ -114,8 +126,8 @@ final class ProbeDoorModel: ObservableObject {
                     self.onChallenge()
                 }
             }
-            if self.passwordMethodArmed, result != "password",
-               self.passwordMethodTries < 6 {
+            if self.passwordMethodArmed, !self.chooserInventoried,
+               result != "password", self.passwordMethodTries < 6 {
                 self.passwordMethodTries += 1
                 self.controller.evaluateForResult(ProbeJS.clickPasswordMethod) { [weak self] r in
                     self?.log("door: click phương thức mật khẩu (lần \(self?.passwordMethodTries ?? 0)): \(r ?? "nil")")
@@ -133,6 +145,12 @@ final class ProbeDoorModel: ObservableObject {
         if !challengeInventoried {
             challengeInventoried = true
         }
+        // 0.1.4: scan the chooser rows HERE too — the
+        // challenge-step list itself carries methods (the
+        // SMS row) that the expanded post-'Try another way'
+        // list no longer shows. Buttons accumulate as the
+        // UNION of every scan (see detectChooserRows).
+        scanChooser(afterSeconds: 1.5, allowRetry: false)
     }
 
     func clickTryAnotherWay() {
@@ -171,10 +189,15 @@ final class ProbeDoorModel: ObservableObject {
         guard let json, let data = json.data(using: .utf8),
               let texts = try? JSONDecoder().decode([String].self, from: data)
         else {
-            log("door: chooser inventory: không đọc được")
-            chooserRows = []
+            // Union semantics (0.1.4): a failed scan must not
+            // wipe buttons an earlier scan already built.
+            log("door: chooser inventory: không đọc được — giữ nguyên các nút đã có")
             return []
         }
+        // A captured inventory ends the legacy password-
+        // method branch: its retry loop is silenced from
+        // here on (0.1.4, log-noise fix).
+        chooserInventoried = true
         log("door: chooser inventory (\(texts.count) hàng bấm được): "
             + texts.joined(separator: " | "))
         let lowered = texts.map { $0.lowercased() }
@@ -189,43 +212,122 @@ final class ProbeDoorModel: ObservableObject {
                                    label: "Mã Authenticator",
                                    needles: ["authenticator"], avoid: ""))
         }
-        // The authenticator row's own text also contains
-        // "verification code" — an SMS row must not be it.
-        let smsHit = lowered.contains { text in
-            (text.contains("text message") || text.contains("verification code"))
-                && !text.contains("authenticator")
-        }
+        // SMS: the challenge-step list phrases it "Get a
+        // verification code at (•••) •••-••12" (0.1.3 device
+        // log) — "verification code at" cannot be the
+        // authenticator row ("…code from the Google
+        // Authenticator app"). The older phrasings stay as
+        // fallback; the authenticator row also contains
+        // "verification code", so it stays excluded there.
+        let smsHit = lowered.contains { $0.contains("verification code at") }
+            || lowered.contains { text in
+                (text.contains("text message") || text.contains("verification code"))
+                    && !text.contains("authenticator")
+            }
         if smsHit {
             rows.append(ChooserRow(kind: .sms, label: "Mã SMS",
-                                   needles: ["text message", "verification code"],
+                                   needles: ["verification code at",
+                                             "text message", "verification code"],
                                    avoid: "authenticator"))
         }
-        chooserRows = rows
         log(rows.isEmpty
-            ? "door: KHÔNG nhận diện được hàng 2SV nào trong inventory"
-            : "door: nhận diện \(rows.count) hàng 2SV: "
+            ? "door: KHÔNG nhận diện được hàng 2SV nào trong inventory này"
+            : "door: inventory này nhận diện \(rows.count) hàng 2SV: "
                 + rows.map(\.label).joined(separator: ", "))
+        // UNION merge: rows found by ANY scan (challenge
+        // step or post-expansion) keep their native button,
+        // even when a later list no longer shows them.
+        for row in rows where !chooserRows.contains(where: { $0.kind == row.kind }) {
+            chooserRows.append(row)
+        }
+        if !rows.isEmpty {
+            log("door: tổng hợp các nút 2SV hiện có (\(chooserRows.count)): "
+                + chooserRows.map(\.label).joined(separator: ", "))
+        }
         return rows
     }
 
     /// Owner tapped one of the detected chooser rows: JS-
     /// click it by visible text, then watch the page step
-    /// (transitions only) for up to ~120 s.
+    /// (transitions only) for up to ~120 s. The 0.1.4 click
+    /// v2 walks up from the text match to the element
+    /// Google's handler listens on and fires a full press
+    /// sequence; if the step has not moved ~3 s later, ONE
+    /// retry click lands on the row's first interactive
+    /// descendant.
     func clickChooser(_ row: ChooserRow) {
         codeInputPresent = false
         Task { [weak self] in
             guard let self else { return }
+            let stepBefore = await self.evaluateAwait(ProbeJS.chooserStep) ?? "unreadable"
             var outcome = "notfound"
+            var clicked = false
             for needle in row.needles {
                 let r = await self.evaluateAwait(
                     ProbeJS.clickChooserRow(needle: needle, avoid: row.avoid))
-                if r == "clicked" {
-                    outcome = "clicked (needle='\(needle)')"
+                guard let r else { continue }
+                let info = Self.parseClickReport(r)
+                if info.outcome == "clicked" {
+                    outcome = "clicked (needle='\(needle)', target=\(info.target))"
+                    clicked = true
                     break
                 }
             }
             self.log("door: click hàng 2SV '\(row.label)' → \(outcome)")
-            if outcome != "notfound" { self.startChooserWatch() }
+            if clicked {
+                self.startChooserWatch()
+                self.scheduleChooserRetry(row: row, stepBefore: stepBefore)
+            }
+        }
+    }
+
+    /// Parse a chooser click payload's JSON report into
+    /// (outcome, target description). The description is
+    /// values-free by construction: tag name, role,
+    /// jsaction presence, and the qualifier that selected
+    /// the target — never page text.
+    private static func parseClickReport(_ json: String)
+        -> (outcome: String, target: String) {
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let outcome = obj["outcome"] as? String
+        else { return (json, "-") }
+        let tag = obj["tag"] as? String ?? "?"
+        let role = obj["role"] as? String ?? "-"
+        let js = (obj["jsaction"] as? Bool) == true ? "1" : "0"
+        let qual = obj["qual"] as? String ?? "-"
+        return (outcome, "\(tag) role=\(role) jsaction=\(js) qual=\(qual)")
+    }
+
+    /// 0.1.4 retry leg: if the page step is unchanged ~3 s
+    /// after the row click, click ONCE more — on the row's
+    /// first descendant (document order) that is an A, a
+    /// BUTTON, or carries role link/button. Skipped when
+    /// the step moved, the sign-in completed, or the row
+    /// has no such descendant.
+    private func scheduleChooserRetry(row: ChooserRow, stepBefore: String) {
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard let self else { return }
+            let stepNow = await self.evaluateAwait(ProbeJS.chooserStep) ?? "unreadable"
+            guard stepNow == stepBefore, stepNow != "signed-in" else { return }
+            for needle in row.needles {
+                let r = await self.evaluateAwait(
+                    ProbeJS.clickChooserRowRetry(needle: needle, avoid: row.avoid))
+                guard let r else { continue }
+                let info = Self.parseClickReport(r)
+                if info.outcome == "clicked" {
+                    self.log("door: click hàng 2SV '\(row.label)' → retry clicked "
+                        + "(target=\(info.target)) — bước chưa đổi sau 3s")
+                    return
+                }
+                if info.outcome == "nodesc" {
+                    self.log("door: retry hàng 2SV '\(row.label)': hàng không có "
+                        + "phần tử con tương tác — bỏ qua")
+                    return
+                }
+            }
+            self.log("door: retry hàng 2SV '\(row.label)': không tìm lại được hàng — bỏ qua")
         }
     }
 
@@ -457,7 +559,7 @@ struct ProbeDoorView: View {
     }
 }
 
-// MARK: - Probe 4 chooser payloads (0.1.3)
+// MARK: - Probe 4 chooser payloads (0.1.3, click v2 in 0.1.4)
 //
 // The 2SV chooser mechanism the 0.1.1 device run proved
 // missing: after 'Try another way', the account's chooser
@@ -467,6 +569,19 @@ struct ProbeDoorView: View {
 // verification code. Page VALUES are never returned: the
 // code goes in one-way, and only its length is logged
 // (Swift side).
+//
+// Click v2 (0.1.4): the 0.1.3 run logged 'clicked' on
+// every row yet the page never left the chooser — the
+// bare .click() landed on the shortest text-matching
+// element, the text shell, not the node Google's handler
+// listens on. V2 walks UP from the match to the first
+// ancestor carrying jsaction / role link|button / a
+// data-challengeid|data-method|data-value attribute (an
+// A or BUTTON qualifies too), then fires a full press
+// sequence (pointerdown → mousedown → pointerup →
+// mouseup → click) at the target's centre. The payload
+// reports the chosen target values-free (tag, role,
+// jsaction presence, qualifier) as JSON.
 
 extension ProbeJS {
     /// Single-quote a Swift string as a JS string literal
@@ -509,11 +624,18 @@ extension ProbeJS {
         })()
         """
 
-    /// Click the chooser row whose visible text CONTAINS
-    /// the needle — the shortest matching visible element
-    /// wins (the most specific node) — skipping rows whose
-    /// text contains `avoid`. Scrolls it into view first.
-    /// Returns 'clicked' / 'notfound'.
+    /// Click v2: locate the chooser row whose visible
+    /// text CONTAINS the needle (shortest matching visible
+    /// element wins; rows containing `avoid` are skipped),
+    /// walk UP from it (max 6 levels) to the first element
+    /// carrying jsaction / role link|button / a
+    /// data-challengeid|data-method|data-value attribute
+    /// (tag A or BUTTON qualifies; fallback = the match
+    /// itself), scroll it to centre, and dispatch the
+    /// full press sequence at its centre point. Returns a
+    /// values-free JSON report:
+    /// {"outcome":"clicked","tag":…,"role":…,
+    ///  "jsaction":…,"qual":…} / {"outcome":"notfound"}.
     static func clickChooserRow(needle: String, avoid: String) -> String {
         """
         (function(){
@@ -536,10 +658,104 @@ extension ProbeJS {
             if (!vis(cands[i])) { continue; }
             if (t.length < bestLen) { best = cands[i]; bestLen = t.length; }
           }
-          if (!best) { return 'notfound'; }
-          best.scrollIntoView();
-          best.click();
-          return 'clicked';
+          if (!best) { return JSON.stringify({outcome: 'notfound'}); }
+          function qualifier(el) {
+            if (el.hasAttribute && el.hasAttribute('jsaction')) { return 'jsaction'; }
+            var role = el.getAttribute ? (el.getAttribute('role') || '') : '';
+            if (role === 'link' || role === 'button') { return 'role'; }
+            if (el.hasAttribute && (el.hasAttribute('data-challengeid')
+                || el.hasAttribute('data-method')
+                || el.hasAttribute('data-value'))) { return 'data'; }
+            if (el.tagName === 'A' || el.tagName === 'BUTTON') { return 'tag'; }
+            return '';
+          }
+          var target = null;
+          var qual = '';
+          var el = best;
+          for (var level = 0; el && level <= 6; level++) {
+            var q = qualifier(el);
+            if (q) { target = el; qual = q; break; }
+            el = el.parentElement;
+          }
+          if (!target) { target = best; qual = 'self'; }
+          target.scrollIntoView({block: 'center'});
+          var rect = target.getBoundingClientRect();
+          var cx = rect.left + rect.width / 2;
+          var cy = rect.top + rect.height / 2;
+          function fire(type) {
+            var Ctor = (type.indexOf('pointer') === 0 && window.PointerEvent)
+              ? window.PointerEvent : window.MouseEvent;
+            target.dispatchEvent(new Ctor(type,
+              {bubbles: true, cancelable: true, clientX: cx, clientY: cy}));
+          }
+          fire('pointerdown');
+          fire('mousedown');
+          fire('pointerup');
+          fire('mouseup');
+          fire('click');
+          var role = target.getAttribute ? (target.getAttribute('role') || '-') : '-';
+          return JSON.stringify({outcome: 'clicked',
+            tag: target.tagName || '?', role: role,
+            jsaction: !!(target.hasAttribute && target.hasAttribute('jsaction')),
+            qual: qual});
+        })()
+        """
+    }
+
+    /// Retry leg for click v2: re-locate the row (same
+    /// matching as clickChooserRow), then fire the same
+    /// full press sequence on the row's FIRST descendant
+    /// in document order that is an A, a BUTTON, or
+    /// carries role link/button. Returns the same
+    /// values-free JSON report, with outcome 'clicked' /
+    /// 'nodesc' (row found, no such descendant) /
+    /// 'norow'.
+    static func clickChooserRowRetry(needle: String, avoid: String) -> String {
+        """
+        (function(){
+          function vis(el) {
+            if (!el) { return false; }
+            var r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          }
+          var needle = \(doorLiteral(needle)).toLowerCase();
+          var avoid = \(doorLiteral(avoid)).toLowerCase();
+          var cands = document.querySelectorAll('a, button, [role="button"], [role="link"], [role="listitem"], li, div');
+          var best = null;
+          var bestLen = 100000;
+          for (var i = 0; i < cands.length; i++) {
+            var t = (cands[i].innerText || cands[i].textContent || '').trim().replace(/\\s+/g, ' ');
+            if (!t || t.length > 300) { continue; }
+            var low = t.toLowerCase();
+            if (low.indexOf(needle) < 0) { continue; }
+            if (avoid && low.indexOf(avoid) >= 0) { continue; }
+            if (!vis(cands[i])) { continue; }
+            if (t.length < bestLen) { best = cands[i]; bestLen = t.length; }
+          }
+          if (!best) { return JSON.stringify({outcome: 'norow'}); }
+          var desc = best.querySelectorAll('a, button, [role="link"], [role="button"]');
+          if (!desc.length) { return JSON.stringify({outcome: 'nodesc'}); }
+          var target = desc[0];
+          target.scrollIntoView({block: 'center'});
+          var rect = target.getBoundingClientRect();
+          var cx = rect.left + rect.width / 2;
+          var cy = rect.top + rect.height / 2;
+          function fire(type) {
+            var Ctor = (type.indexOf('pointer') === 0 && window.PointerEvent)
+              ? window.PointerEvent : window.MouseEvent;
+            target.dispatchEvent(new Ctor(type,
+              {bubbles: true, cancelable: true, clientX: cx, clientY: cy}));
+          }
+          fire('pointerdown');
+          fire('mousedown');
+          fire('pointerup');
+          fire('mouseup');
+          fire('click');
+          var role = target.getAttribute ? (target.getAttribute('role') || '-') : '-';
+          return JSON.stringify({outcome: 'clicked',
+            tag: target.tagName || '?', role: role,
+            jsaction: !!(target.hasAttribute && target.hasAttribute('jsaction')),
+            qual: 'descendant'});
         })()
         """
     }
