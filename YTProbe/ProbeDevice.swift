@@ -41,13 +41,100 @@ final class DeviceCodeModel: ObservableObject {
 
     // MARK: Step 1 — scrape the TV client credentials
 
+    private static let tvUserAgent =
+        "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)"
+
+    /// Run the client_id / client_secret patterns over one
+    /// text (the /tv HTML or one JS bundle). Returns what
+    /// THIS text held — values stay in the model, the log
+    /// only ever sees presence and lengths.
+    private func findCredentials(in text: String)
+        -> (id: String?, secret: String?, secretLabel: String?) {
+        let id = firstMatch(in: text,
+                            pattern: "[0-9]+-[a-z0-9]+\\.apps\\.googleusercontent\\.com")
+        var secret: String?
+        var secretLabel: String?
+        for (label, pattern) in [
+            ("json", "\"client_secret\"\\s*:\\s*\"([^\"]{8,})\""),
+            ("camel", "\"clientSecret\"\\s*:\\s*\"([^\"]{8,})\""),
+            ("js", "client_secret=([A-Za-z0-9_\\-]{8,})"),
+        ] {
+            if let found = firstCapture(in: text, pattern: pattern) {
+                secret = found
+                secretLabel = label
+                break
+            }
+        }
+        return (id, secret, secretLabel)
+    }
+
+    /// Script bundle URLs referenced by the /tv HTML,
+    /// restricted to youtube/google hosts, de-duplicated,
+    /// in document order.
+    private func bundleURLs(in html: String) -> [URL] {
+        guard let regex = try? NSRegularExpression(
+            pattern: "src=[\"']([^\"']+\\.js[^\"']*)[\"']") else { return [] }
+        let range = NSRange(html.startIndex..., in: html)
+        let allowedHosts = ["youtube.com", "google.com", "gstatic.com",
+                            "googleusercontent.com", "youtube-nocookie.com"]
+        var urls: [URL] = []
+        var seen = Set<String>()
+        for match in regex.matches(in: html, range: range) {
+            guard match.numberOfRanges > 1,
+                  let r = Range(match.range(at: 1), in: html) else { continue }
+            var raw = String(html[r])
+            if raw.hasPrefix("//") {
+                raw = "https:" + raw
+            } else if raw.hasPrefix("/") {
+                raw = "https://www.youtube.com" + raw
+            }
+            guard let url = URL(string: raw),
+                  let host = url.host,
+                  allowedHosts.contains(where: { host == $0 || host.hasSuffix("." + $0) }),
+                  seen.insert(url.absoluteString).inserted
+            else { continue }
+            urls.append(url)
+        }
+        return urls
+    }
+
+    /// Second scrape leg: the /tv HTML carries the
+    /// client_id but not the secret — the TV app's JS
+    /// bundles are the remaining place it can live. Fetch
+    /// each bundle (bounded) and run the same patterns.
+    /// Returns true once BOTH credentials are held.
+    private func scrapeJSBundles(html: String) async -> Bool {
+        let all = bundleURLs(in: html)
+        let cap = 12
+        log("scrape-js: tìm thấy \(all.count) bundle JS (domain youtube/google) trong HTML"
+            + (all.count > cap ? " — chỉ cào \(cap) bundle đầu (chạm cap)" : ""))
+        for url in all.prefix(cap) {
+            var req = URLRequest(url: url)
+            req.setValue(Self.tvUserAgent, forHTTPHeaderField: "User-Agent")
+            req.timeoutInterval = 20
+            guard let (data, response) = try? await URLSession.shared.data(for: req),
+                  (response as? HTTPURLResponse)?.statusCode == 200 else {
+                log("scrape-js: bundle \(url.host ?? "?")\(url.path) — tải thất bại")
+                continue
+            }
+            let text = String(decoding: data, as: UTF8.self)
+            let found = findCredentials(in: text)
+            if let id = found.id, clientID == nil { clientID = id }
+            if let secret = found.secret, clientSecret == nil { clientSecret = secret }
+            log("scrape-js: bundle \(url.host ?? "?")\(url.path) — \(data.count) bytes — "
+                + "id=\(found.id != nil ? "TÌM THẤY (len=\(found.id?.count ?? 0))" : "không") "
+                + "secret=\(found.secret != nil ? "TÌM THẤY (len=\(found.secret?.count ?? 0))" : "không")")
+            if clientID != nil && clientSecret != nil { return true }
+        }
+        return clientID != nil && clientSecret != nil
+    }
+
     func scrape() {
         Task {
             log("START Probe 9 — cào credentials của TV client từ youtube.com/tv (SmartTubeIOS pattern)")
             guard let url = URL(string: "https://www.youtube.com/tv") else { return }
             var req = URLRequest(url: url)
-            req.setValue("Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)",
-                         forHTTPHeaderField: "User-Agent")
+            req.setValue(Self.tvUserAgent, forHTTPHeaderField: "User-Agent")
             req.timeoutInterval = 20
             guard let (data, response) = try? await URLSession.shared.data(for: req),
                   (response as? HTTPURLResponse)?.statusCode == 200 else {
@@ -57,27 +144,26 @@ final class DeviceCodeModel: ObservableObject {
             }
             let html = String(decoding: data, as: UTF8.self)
             log("scrape: trang /tv tải về \(data.count) bytes")
-            clientID = firstMatch(in: html, pattern: "[0-9]+-[a-z0-9]+\\.apps\\.googleusercontent\\.com")
-            if clientID != nil {
-                log("scrape: client_id TÌM THẤY (pattern: apps.googleusercontent.com, len=\(clientID?.count ?? 0))")
+            let htmlFound = findCredentials(in: html)
+            if let id = htmlFound.id {
+                clientID = id
+                log("scrape: client_id TÌM THẤY (pattern: apps.googleusercontent.com, len=\(id.count))")
             }
-            for (label, pattern) in [
-                ("json", "\"client_secret\"\\s*:\\s*\"([^\"]{8,})\""),
-                ("camel", "\"clientSecret\"\\s*:\\s*\"([^\"]{8,})\""),
-                ("js", "client_secret=([A-Za-z0-9_\\-]{8,})"),
-            ] {
-                if let secret = firstCapture(in: html, pattern: pattern) {
-                    clientSecret = secret
-                    log("scrape: client_secret TÌM THẤY (pattern: \(label), len=\(secret.count))")
-                    break
-                }
+            if let secret = htmlFound.secret {
+                clientSecret = secret
+                log("scrape: client_secret TÌM THẤY (pattern: \(htmlFound.secretLabel ?? "?"), len=\(secret.count))")
             }
             if clientID == nil || clientSecret == nil {
                 log("scrape: KHÔNG đủ credentials trong HTML trang /tv "
                     + "(id=\(clientID != nil) secret=\(clientSecret != nil)) — "
-                    + "credentials có thể nằm trong bundle JS của app TV (đợt sau cào tiếp từ JS)")
-                verdict = "KHÔNG — chưa cào được credentials từ HTML (xem log)"
-                return
+                    + "cào tiếp từ các bundle JS của app TV")
+                let completed = await scrapeJSBundles(html: html)
+                if !completed {
+                    verdict = "KHÔNG — HTML và cả bundle JS đều không đủ credentials "
+                        + "(id=\(clientID != nil) secret=\(clientSecret != nil)) (xem log)"
+                    log("KẾT QUẢ probe9-scrape: \(verdict)")
+                    return
+                }
             }
             UserDefaults.standard.set(clientID, forKey: "probe9.clientID")
             UserDefaults.standard.set(clientSecret, forKey: "probe9.clientSecret")

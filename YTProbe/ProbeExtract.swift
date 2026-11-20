@@ -258,7 +258,14 @@ final class ExtractPlayerModel: ObservableObject {
     private var currentVideoID: String = ""
     private var advanceStartedAt: Date?
     private var endHandled = false
+    private var autoSwapDone = false
     var onEvent: ((String) -> Void)?
+    /// Swap-mode auto-advance hook (wired by ExtractModel
+    /// to its playerNext): the overlay buttons over
+    /// AVPlayerViewController are focus-unreachable on
+    /// device, so the swap leg fires this ONCE at ~30 s of
+    /// playback instead of depending on a button press.
+    var onAutoSwap: (() -> Void)?
 
     private func event(_ line: String) {
         DiagLog.write("extract", line)
@@ -269,6 +276,7 @@ final class ExtractPlayerModel: ObservableObject {
         self.mode = mode
         currentVideoID = videoID
         endHandled = false
+        autoSwapDone = false
         firstFrameAt = nil
         playStartedAt = Date()
         player.removeAllItems()
@@ -349,6 +357,19 @@ final class ExtractPlayerModel: ObservableObject {
         if let item = player.currentItem, item.status == .failed {
             event("player: item FAILED — \(item.error?.localizedDescription ?? "?")")
         }
+        // SWAP decidability: in swap mode, advance ONCE via
+        // the playerNext path when playback reaches ~30 s —
+        // the overlay "Qua tập" button cannot receive focus
+        // over AVPlayerViewController, so nothing in this
+        // leg may depend on it.
+        if mode == "swap", !autoSwapDone,
+           let t = player.currentItem?.currentTime().seconds,
+           t.isFinite, t >= 30 {
+            autoSwapDone = true
+            event("player: AUTO-SWAP tại t=\(Int(t))s — mode=swap tự qua tập qua playerNext "
+                + "(không dùng nút overlay)")
+            onAutoSwap?()
+        }
         // End detection for the swap mode's auto-advance
         // note: AVQueuePlayer advances itself in queue mode;
         // the tick just observes the current item change.
@@ -358,7 +379,7 @@ final class ExtractPlayerModel: ObservableObject {
            t >= d - 0.6, !endHandled {
             endHandled = true
             event("player: item tới cuối (t=\(Int(t))/\(Int(d))) — mode=\(mode) "
-                + "(queue tự qua tập; swap do app xử lý ở bản production)")
+                + "(queue tự qua tập; swap tự qua ở mốc 30s qua AUTO-SWAP)")
         }
     }
 }
@@ -376,7 +397,7 @@ struct ExtractView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Probe 3+7 — Trích xuất (ma trận client)")
                         .font(.system(size: 34, weight: .bold))
-                    Text("Bằng Chứng Thép II tập 1 (free) qua 4 client InnerTube. Client thắng sẽ phát native; trong trình phát có sẵn: nạp trước tập 2, qua tập QUEUE vs SWAP, beacon D-P1/D-P2.")
+                    Text("Bằng Chứng Thép II tập 1 (free) qua 4 client InnerTube. Client thắng sẽ phát native; nạp trước tập 2 sẵn: QUEUE tự qua tập khi hết tập, SWAP tự qua tập ở giây 30 (không cần bấm nút trong trình phát). Beacon D-P1/D-P2 ở dưới.")
                         .font(.system(size: 22))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: 1000, alignment: .leading)
@@ -458,6 +479,10 @@ final class ExtractModel: ObservableObject {
         guard !prepared else { return }
         prepared = true
         player.onEvent = { [weak self] line in self?.lines.append(line) }
+        player.onAutoSwap = { [weak self, weak player] in
+            guard let self, let player else { return }
+            self.playerNext(player: player)
+        }
         Task {
             let loaded = await ProbeClientLadder.load()
             clients = loaded.clients
