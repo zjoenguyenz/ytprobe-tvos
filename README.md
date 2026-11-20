@@ -74,7 +74,22 @@ có/không + độ dài).
    (probe lấy mẫu vị trí mỗi 15 giây để chắc chắn link không
    chết giữa chừng kiểu ~30 giây), phát xong nó tự đóng và hiện
    kết luận. Kết luận nằm ở dòng "KẾT QUẢ probe14" cuối log.
-9. Các probe còn lại (2, 2b, 2c, 6, 5, E-P2, E-P6, C-3, 10, E-P4, 8)
+9. **Probe 15** — giải mã sig/n cho client downgraded (bản 0.2.1):
+   Probe 14 kết án client 5.x thoát SABR nhưng cả 31 format bị
+   khoá chữ ký (signatureCipher) — probe này thử GIẢI khoá đó
+   ngay trên TV. Mở Probe 15 là nó TỰ CHẠY: đi lại đúng đường
+   Probe 14 (sandbox bị xoá nên lại hiện MÃ KÍCH HOẠT — duyệt
+   một lần ở google.com/device bằng tài khoản Gold như thường),
+   gọi /player, rồi lấy base.js của player, trích hai hàm
+   sig/n bằng pattern kiểu yt-dlp, chạy chúng bằng
+   JavaScriptCore (không qua WebView), giải URL của itag
+   137/140/18, kiểm byte thật (Range GET) và phát thử bản
+   muxed 18 bằng trình phát native — **cứ để nó phát hết
+   ~2 phút rưỡi** như Probe 14. Màn hình chỉ có chữ cho tới
+   lúc phát thử là đúng. Kết luận nằm ở dòng "KẾT QUẢ
+   probe15" cuối log (SIG/N: ĐẠT / GIẢI ĐƯỢC MÀ PHÁT CHẾT /
+   BYTE-CHECK BỊ TỪ CHỐI / KHÔNG TRÍCH ĐƯỢC HÀM / EVAL LỖI).
+10. Các probe còn lại (2, 2b, 2c, 6, 5, E-P2, E-P6, C-3, 10, E-P4, 8)
    chạy theo thời gian cho phép — mỗi probe đều tự kết luận trong log.
 
 Sau mỗi probe (hoặc cuối buổi): tải log ở màn hình chính YT Probe và

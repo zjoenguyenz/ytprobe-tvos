@@ -26,7 +26,7 @@ struct YTProbeApp: App {
 private enum ProbeRoute: Identifiable {
     case probe1, probe2, probe2b, probe2c, probe6, probe5
     case pin, extract, device9, door4, gold11, refusal
-    case oracle, botguard, pollCost, embed, probe12, probe13, probe14
+    case oracle, botguard, pollCost, embed, probe12, probe13, probe14, probe15
 
     var id: String {
         switch self {
@@ -49,6 +49,7 @@ private enum ProbeRoute: Identifiable {
         case .probe12: return "probe12"
         case .probe13: return "probe13"
         case .probe14: return "probe14"
+        case .probe15: return "probe15"
         }
     }
 }
@@ -102,6 +103,7 @@ struct ProbeRootView: View {
                     (.probe12, "Probe 12 · Trích xuất Gold sau đăng nhập (ma trận có cookie)"),
                     (.probe13, "Probe 13 · SABR pha 1B (fetcher + PO token)"),
                     (.probe14, "Probe 14 · TVHTML5 downgraded + OAuth"),
+                    (.probe15, "Probe 15 · Giải mã sig/n (downgraded)"),
                 ])
                 group("NHÓM TRANG PHIM", [
                     (.probe2, "Probe 2 · Trang desktop (Safari UA + MSE)"),
@@ -180,6 +182,7 @@ struct ProbeRootView: View {
         case .probe12: AuthExtractView(onExit: exit)
         case .probe13: SabrProbeView(onExit: exit)
         case .probe14: DowngradedProbeView(onExit: exit)
+        case .probe15: SigNProbeView(onExit: exit)
         }
     }
 }
