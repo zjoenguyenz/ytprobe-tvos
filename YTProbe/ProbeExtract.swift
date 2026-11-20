@@ -752,8 +752,11 @@ final class ExtractModel: ObservableObject {
             req.setValue(web.clientVersion, forHTTPHeaderField: "X-YouTube-Client-Version")
             req.setValue(web.userAgent, forHTTPHeaderField: "User-Agent")
             req.setValue(cookie.header, forHTTPHeaderField: "Cookie")
-            guard let (data, response) = try? await URLSession.shared.data(for: req),
-                  let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard let (data, response) = try? await URLSession.shared.data(for: req) else {
+                log("D-P6: browse lịch sử thất bại (HTTP -1)")
+                return
+            }
+            guard let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else {
                 log("D-P6: browse lịch sử thất bại (HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1))")
                 return

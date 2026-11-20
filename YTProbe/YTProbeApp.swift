@@ -123,7 +123,7 @@ struct ProbeRootView: View {
                 .font(.system(size: 28, weight: .bold))
             Text(serverLine)
                 .font(.system(size: 24))
-                .foregroundStyle(serverURL.isEmpty ? .secondary : .green)
+                .foregroundStyle(serverURL.isEmpty ? Color.secondary : Color.green)
             if !serverURL.isEmpty {
                 Text(serverURL)
                     .font(.system(size: 30, weight: .semibold, design: .monospaced))

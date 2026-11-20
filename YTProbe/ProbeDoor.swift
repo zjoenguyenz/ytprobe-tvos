@@ -160,7 +160,7 @@ struct ProbeDoorView: View {
                         ? "✓ ĐÃ ĐĂNG NHẬP — phiên đã sẵn cho Probe 11 (trang Gold) và Probe 9."
                         : "○ Chưa đăng nhập — bước trang hiện tại: \(model.fieldKind)")
                         .font(.system(size: 24))
-                        .foregroundStyle(session.signedIn ? .green : .secondary)
+                        .foregroundStyle(session.signedIn ? Color.green : Color.secondary)
                 }
                 Spacer()
                 if !model.verdict.isEmpty {

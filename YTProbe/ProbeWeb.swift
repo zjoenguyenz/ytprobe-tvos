@@ -800,8 +800,8 @@ struct ProbeWebView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> JoeWebHostView {
         let host = (mediaSourceSwitch || contentModeDesktop)
-            ? JoeWebHostView.hostView(withMediaSourceSwitch: mediaSourceSwitch,
-                                      contentModeDesktop: contentModeDesktop)
+            ? JoeWebHostView(mediaSourceSwitch: mediaSourceSwitch,
+                             contentModeDesktop: contentModeDesktop)
             : JoeWebHostView(frame: .zero)
         host.navigationMode = navigationMode
         host.playbackPressesEnabled = playbackPresses
