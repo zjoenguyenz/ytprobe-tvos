@@ -112,6 +112,208 @@ enum ProbeJS {
         })()
         """
 
+    /// PROBE (0.1.6): the video-element MAP — enumerate
+    /// EVERY <video> element on the page (count + per-
+    /// element index, paused, ended, currentTime, duration,
+    /// readyState) and name the CARRIER: the element that
+    /// carries the episode (a playing element if one
+    /// exists, else the largest duration, else index 0).
+    /// `legacy` is the index the pre-0.1.6 poll reads —
+    /// document.querySelector('video') is always the FIRST
+    /// element. This map exists because the 0.1.5 device
+    /// evidence (owner video, 2026-11-20 13:02) showed the
+    /// film visibly playing while the legacy poll reported
+    /// play=0 / t frozen / paused: the legacy readback can
+    /// describe a paused sibling element (or an API state
+    /// that does not track the element) while the episode
+    /// plays on another element. Every 0.1.6 transport
+    /// verdict is computed from THIS map, comparing like
+    /// with like: the same element's paused flag and its
+    /// currentTime advancing.
+    static let videoMap = """
+        (function(){
+          var vs = document.querySelectorAll('video');
+          var items = [];
+          var carrier = -1, bestD = -1, bestI = -1;
+          for (var i = 0; i < vs.length; i++) {
+            var v = vs[i];
+            var d = isFinite(v.duration) ? v.duration : 0;
+            items.push({i: i, paused: !!v.paused, ended: !!v.ended,
+              t: isFinite(v.currentTime) ? v.currentTime : 0,
+              d: d, rs: v.readyState});
+            if (!v.paused && !v.ended && carrier < 0) { carrier = i; }
+            if (d > bestD) { bestD = d; bestI = i; }
+          }
+          if (carrier < 0 && bestI >= 0) { carrier = bestI; }
+          if (carrier < 0 && items.length) { carrier = 0; }
+          return JSON.stringify({count: vs.length, legacy: 0,
+            carrier: carrier, items: items});
+        })()
+        """
+
+    /// PROBE (0.1.6): the transport result record — every
+    /// transport method below writes its outcome to
+    /// window.__probeTransport (method, direction, status,
+    /// error text); this read payload returns it as JSON.
+    /// M2's play() promise settles ASYNCHRONOUSLY, so the
+    /// record is re-read during the confirm window — a
+    /// rejection that lands after the starter returned is
+    /// still captured, with its error text.
+    static let transportResult = """
+        (function(){
+          var r = window.__probeTransport;
+          if (!r) { return JSON.stringify({status: 'none'}); }
+          return JSON.stringify(r);
+        })()
+        """
+
+    /// PROBE (0.1.6) transport M1 — the YouTube player's
+    /// OWN API on #movie_player (the same object the poll
+    /// reads): playVideo() / pauseVideo(), direction from
+    /// getPlayerState(). Synchronous try/catch — a thrown
+    /// error is recorded with its message. This is the leg
+    /// togglePlay already tries first; on the owner's TV
+    /// (0.1.5) playVideo() moved the API state paused ->
+    /// buffering but the media element never actually
+    /// played, which is why M2/M3 now exist behind it.
+    static let transportM1 = """
+        (function(){
+          var rec = {method: 'M1', el: -1, action: '-', status: 'error', detail: ''};
+          try {
+            var p = document.getElementById('movie_player');
+            if (!p || !p.getPlayerState) {
+              rec.detail = 'no player API';
+            } else if (p.getPlayerState() === 1) {
+              p.pauseVideo();
+              rec.action = 'pause'; rec.status = 'called';
+            } else {
+              p.playVideo();
+              rec.action = 'play'; rec.status = 'called';
+            }
+          } catch (ex) {
+            rec.detail = String((ex && ex.message) || ex).slice(0, 160);
+          }
+          window.__probeTransport = rec;
+          return JSON.stringify(rec);
+        })()
+        """
+
+    /// PROBE (0.1.6) transport M2 — direct media-element
+    /// calls (play() / pause()) on the CARRIER element —
+    /// the element the video map names as carrying the
+    /// episode (playing element, else largest duration,
+    /// else first) — NOT blindly the first <video>: the
+    /// 13:02 evidence says the first element may be a
+    /// paused sibling. The record carries the element
+    /// index it acted on (el). The play() PROMISE is
+    /// captured: resolve/reject update the transport
+    /// record, and a rejection is stored WITH its error
+    /// name + message (togglePlay discarded this promise,
+    /// so a rejection was invisible).
+    static let transportM2 = """
+        (function(){
+          var rec = {method: 'M2', el: -1, action: '-', status: 'error', detail: ''};
+          var vs = document.querySelectorAll('video');
+          if (!vs.length) {
+            rec.detail = 'novideo';
+            window.__probeTransport = rec;
+            return JSON.stringify(rec);
+          }
+          var idx = -1, bestD = -1, bestI = 0;
+          for (var i = 0; i < vs.length; i++) {
+            if (!vs[i].paused && !vs[i].ended) { idx = i; break; }
+            var d = isFinite(vs[i].duration) ? vs[i].duration : 0;
+            if (d > bestD) { bestD = d; bestI = i; }
+          }
+          if (idx < 0) { idx = bestI; }
+          var v = vs[idx];
+          rec.el = idx;
+          if (v.paused || v.ended) {
+            rec.action = 'play';
+            try {
+              var pr = v.play();
+              if (pr && typeof pr.then === 'function') {
+                rec.status = 'pending';
+                window.__probeTransport = rec;
+                pr.then(function(){
+                  rec.status = 'resolved';
+                  window.__probeTransport = rec;
+                }, function(err){
+                  rec.status = 'rejected';
+                  rec.detail = String((err && (err.name + ': ' + err.message)) || err).slice(0, 160);
+                  window.__probeTransport = rec;
+                });
+              } else {
+                rec.status = 'called-nopromise';
+                window.__probeTransport = rec;
+              }
+            } catch (ex) {
+              rec.detail = String((ex && ex.message) || ex).slice(0, 160);
+              window.__probeTransport = rec;
+            }
+          } else {
+            rec.action = 'pause';
+            try {
+              v.pause();
+              rec.status = 'called';
+            } catch (ex) {
+              rec.detail = String((ex && ex.message) || ex).slice(0, 160);
+            }
+            window.__probeTransport = rec;
+          }
+          return JSON.stringify(rec);
+        })()
+        """
+
+    /// PROBE (0.1.6) transport M3 — a synthetic press at
+    /// the CENTRE of the CARRIER element (same selection
+    /// as M2; the record carries its index as el): the
+    /// door's click-v2 event family (pointerdown ->
+    /// mousedown -> pointerup -> mouseup -> click,
+    /// PointerEvent when available else MouseEvent,
+    /// bubbles + cancelable, clientX/clientY at the
+    /// target centre), dispatched on the element itself
+    /// so the events bubble through the player's own
+    /// click handlers exactly like a tap on the video.
+    static let transportM3 = """
+        (function(){
+          var rec = {method: 'M3', el: -1, action: 'click', status: 'error', detail: ''};
+          var vs = document.querySelectorAll('video');
+          if (!vs.length) {
+            rec.detail = 'novideo';
+            window.__probeTransport = rec;
+            return JSON.stringify(rec);
+          }
+          var idx = -1, bestD = -1, bestI = 0;
+          for (var i = 0; i < vs.length; i++) {
+            if (!vs[i].paused && !vs[i].ended) { idx = i; break; }
+            var d = isFinite(vs[i].duration) ? vs[i].duration : 0;
+            if (d > bestD) { bestD = d; bestI = i; }
+          }
+          if (idx < 0) { idx = bestI; }
+          var v = vs[idx];
+          rec.el = idx;
+          var rect = v.getBoundingClientRect();
+          var cx = rect.left + rect.width / 2;
+          var cy = rect.top + rect.height / 2;
+          function fire(type) {
+            var Ctor = (type.indexOf('pointer') === 0 && window.PointerEvent)
+              ? window.PointerEvent : window.MouseEvent;
+            v.dispatchEvent(new Ctor(type,
+              {bubbles: true, cancelable: true, clientX: cx, clientY: cy}));
+          }
+          fire('pointerdown');
+          fire('mousedown');
+          fire('pointerup');
+          fire('mouseup');
+          fire('click');
+          rec.status = 'clicked';
+          rec.detail = 'centre ' + Math.round(cx) + ',' + Math.round(cy);
+          window.__probeTransport = rec;
+          return JSON.stringify(rec);
+        })()
+        """
+
     /// Startup nudge (JoeTV verbatim): unmute + play before
     /// first play only.
     static let nudgePlay = """
@@ -835,6 +1037,40 @@ struct ProbePollState: Decodable {
     let pin: Int
     let err: String
     let url: String
+}
+
+/// The video-element map read (ProbeJS.videoMap, 0.1.6):
+/// EVERY <video> element on the page plus the carrier
+/// index — the readback every transport verdict is
+/// computed from (the legacy poll above reads only the
+/// player API state and the FIRST element, which the
+/// 2026-11-20 13:02 device evidence showed can lie).
+struct ProbeVideoMap: Decodable {
+    struct Item: Decodable {
+        let i: Int
+        let paused: Bool
+        let ended: Bool
+        let t: Double
+        let d: Double
+        let rs: Int
+    }
+    let count: Int
+    /// Index the legacy poll's querySelector('video')
+    /// reads — always 0 (the first element).
+    let legacy: Int
+    /// Index carrying the episode (playing element, else
+    /// largest duration, else 0); -1 when there are none.
+    let carrier: Int
+    let items: [Item]
+
+    func item(_ index: Int) -> Item? {
+        items.first(where: { $0.i == index })
+    }
+
+    /// True when any element is actually playing.
+    var anyPlaying: Bool {
+        items.contains(where: { !$0.paused && !$0.ended })
+    }
 }
 
 /// The extended poll read (ProbeJS.pollX).

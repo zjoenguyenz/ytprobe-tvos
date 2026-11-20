@@ -36,9 +36,10 @@ struct PageProbeSpec {
     /// cell — the page player is hosted by a dedicated view
     /// controller that catches the Siri Remote Play/Pause
     /// press on two UIKit paths (gesture recognizer +
-    /// pressesBegan) and forwards it to togglePlay. Every
-    /// other page probe keeps the existing window-consumer
-    /// behaviour untouched.
+    /// pressesBegan) and forwards it through the 0.1.6
+    /// transport chain (M1 -> M2 -> M3, video-map verdict).
+    /// Every other page probe keeps the existing
+    /// window-consumer behaviour untouched.
     var remoteForwarding: Bool = false
     var timeoutSeconds: Int = 60
     var provenance: String = ""
@@ -112,6 +113,10 @@ final class PageProbeModel: ObservableObject {
             // its two paths armed (noteRemoteForwardInstalled).
             log(tag, "remote forwarding cell: window consumer NOT registered "
                 + "for this probe — gesture + pressesBegan paths own Play/Pause")
+            // 0.1.6: the READBACK MAP line (video-element
+            // census + which index the legacy poll reads +
+            // which index carries the episode).
+            Task { [weak self] in await self?.logReadbackMap() }
             if remoteForwardInstallPending {
                 remoteForwardInstallPending = false
                 remoteForwardInstallLogged = true
@@ -341,25 +346,46 @@ final class PageProbeModel: ObservableObject {
         log(tag, "experience: setPlaybackQualityRange(hd1080) → \(q ?? "nil")")
         qualitySet = q == "set"
         if spec.nowPlaying { publishNowPlaying() }
-        // Play/pause through the production mechanism: the
-        // same togglePlay evaluate the window press consumer
+        // Play/pause twice. Probe 11 (remoteForwarding) runs
+        // the 0.1.6 transport chain for both toggles, so a
+        // resume failure is attributable to a method even
+        // without a physical press; every other experience
+        // probe keeps the production mechanism — the same
+        // togglePlay evaluate the window press consumer
         // fires for a remote Play/Pause press.
-        controller.evaluate(ProbeJS.togglePlay)
-        userToggledPause = true
         var pausedSeen = false
-        for _ in 0..<4 {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            if let s = await readPollX(), s.paused { pausedSeen = true; break }
-        }
-        log(tag, "experience: play/pause (togglePlay) → \(pausedSeen ? "tạm dừng OK" : "KHÔNG thấy dừng")")
-        controller.evaluate(ProbeJS.togglePlay)
-        userToggledPause = false
         var resumedSeen = false
-        for _ in 0..<4 {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            if let s = await readPollX(), s.playing { resumedSeen = true; break }
+        if spec.remoteForwarding {
+            // The chain's verdict IS the readback (video
+            // map, like-with-like) — no legacy-poll second
+            // opinion here; that readback is exactly what
+            // 0.1.6 distrusts.
+            let first = await runTransportChain(context: "experience toggle 1")
+            userToggledPause = true
+            pausedSeen = first.method != nil
+            log(tag, "experience: play/pause (chuỗi M1→M2→M3 lần 1) → "
+                + "\(pausedSeen ? "tạm dừng OK" : "KHÔNG thấy dừng") — \(first.summary)")
+            let second = await runTransportChain(context: "experience toggle 2")
+            userToggledPause = false
+            resumedSeen = second.method != nil
+            log(tag, "experience: play/pause (chuỗi M1→M2→M3 lần 2) → "
+                + "\(resumedSeen ? "phát lại OK" : "KHÔNG thấy phát lại") — \(second.summary)")
+        } else {
+            controller.evaluate(ProbeJS.togglePlay)
+            userToggledPause = true
+            for _ in 0..<4 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if let s = await readPollX(), s.paused { pausedSeen = true; break }
+            }
+            log(tag, "experience: play/pause (togglePlay) → \(pausedSeen ? "tạm dừng OK" : "KHÔNG thấy dừng")")
+            controller.evaluate(ProbeJS.togglePlay)
+            userToggledPause = false
+            for _ in 0..<4 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if let s = await readPollX(), s.playing { resumedSeen = true; break }
+            }
+            log(tag, "experience: play/pause (togglePlay lần 2) → \(resumedSeen ? "phát lại OK" : "KHÔNG thấy phát lại")")
         }
-        log(tag, "experience: play/pause (togglePlay lần 2) → \(resumedSeen ? "phát lại OK" : "KHÔNG thấy phát lại")")
         let ppOK = pausedSeen && resumedSeen
         // Ten more seconds of observation: still-watching /
         // pause attribution (Team B-2/B-6) ride the pollX
@@ -441,20 +467,6 @@ final class PageProbeModel: ObservableObject {
         }
     }
 
-    /// One direct read of the SAME poll payload the poll
-    /// timer runs (ProbeJS.poll) — the remote-forwarding
-    /// cell reads state through it before/after a forwarded
-    /// press, so its verdict never depends on the timer's
-    /// phase (the cell must still answer after finish() has
-    /// stopped the timer while the player stays on screen).
-    private func readPollState() async -> ProbePollState? {
-        let result = await evaluateAwait(ProbeJS.poll)
-        guard let result,
-              let data = result.data(using: .utf8)
-        else { return nil }
-        return try? JSONDecoder().decode(ProbePollState.self, from: data)
-    }
-
     private func readPollX() async -> ProbePollXState? {
         let result = await evaluateAwait(ProbeJS.pollX)
         guard let result,
@@ -510,12 +522,13 @@ final class PageProbeModel: ObservableObject {
     // restricted to the playPause press type on the web
     // view's container, and a pressesBegan override on the
     // controller itself. Either path lands here; the press
-    // is timestamped with its source, the page state is read
-    // through the existing poll payload, the EXISTING
-    // togglePlay JS is evaluated, and follow-up poll reads
-    // confirm whether the state actually flipped. If both
-    // paths fire for one physical press, the second is
-    // deduped inside 800 ms and logged as such — never a
+    // is timestamped with its source, then forwarded
+    // through the 0.1.6 transport chain (M1 player API ->
+    // M2 media element -> M3 synthetic click; see
+    // runTransportChain), whose poll reads confirm whether
+    // the state actually flipped and which method did it.
+    // If both paths fire for one physical press, the second
+    // is deduped inside 800 ms and logged as such — never a
     // double toggle.
 
     /// Called by the hosting controller once both catch
@@ -553,7 +566,7 @@ final class PageProbeModel: ObservableObject {
         }
         lastRemoteForwardAt = now
         log(spec.tag, "remote press source=\(source) playPause caught at \(stamp) "
-            + "— forwarding to togglePlay")
+            + "— forwarding to the transport chain (M1 -> M2 -> M3)")
         Task { [weak self] in
             await self?.forwardRemotePlayPause(source: source, stamp: stamp)
         }
@@ -561,41 +574,191 @@ final class PageProbeModel: ObservableObject {
 
     private func forwardRemotePlayPause(source: String, stamp: String) async {
         guard let spec else { return }
-        let before = await readPollState() ?? lastState
         log(spec.tag, "remote press source=\(source) caught=\(stamp) "
-            + "state before=\(Self.pollLabel(before))")
-        controller.evaluate(ProbeJS.togglePlay)
-        var after: ProbePollState?
-        var flipped = false
-        for _ in 0..<6 {
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            guard let state = await readPollState() else { continue }
-            after = state
-            if let before, (state.playing != before.playing
-                || state.paused != before.paused) {
-                flipped = true
-                break
-            }
-            if before == nil, state.playing || state.paused {
-                break
-            }
-        }
-        if let before, let after, flipped {
+            + "— running the transport chain")
+        let outcome = await runTransportChain(context: "remote \(source)")
+        if outcome.method != nil {
             log(spec.tag, "remote press source=\(source): CONFIRMED by poll — "
-                + "play state \(Self.pollLabel(before)) -> \(Self.pollLabel(after))")
+                + outcome.summary)
         } else {
             log(spec.tag, "remote press source=\(source): NOT CONFIRMED by poll — "
-                + "play state \(Self.pollLabel(before)) -> \(Self.pollLabel(after)) "
-                + "(no flip observed in ~3 s)")
+                + outcome.summary)
         }
     }
 
-    private static func pollLabel(_ state: ProbePollState?) -> String {
-        guard let state else { return "unknown" }
-        if state.playing { return "playing" }
-        if state.paused { return "paused" }
-        if state.ended { return "ended" }
-        return "state=\(state.state)"
+    // MARK: 0.1.6 — Transport chain (M1 -> M2 -> M3)
+    //
+    // Why this exists (0.1.5 device evidence): the single
+    // togglePlay forwarding PAUSED fine but never RESUMED
+    // on the legacy readback — playVideo() moved the API
+    // state paused -> buffering(3) while the poll's t
+    // stayed frozen, and the 0.1.5 confirm predicate
+    // counted paused -> state=3 as a flip (comparing a
+    // paused LABEL with a readyState NUMBER), so a dead
+    // resume logged CONFIRMED.
+    //
+    // The 13:02 evidence then flipped the suspicion: the
+    // owner's video shows the film VISIBLY playing (scene
+    // changing) while every legacy poll line still reports
+    // play=0 / t frozen / paused — the legacy readback
+    // itself can lie. ProbeJS.poll reads play/state/t
+    // from the #movie_player API (falling back to the
+    // FIRST <video> element only when the API is absent
+    // or its t is 0), so a page holding several <video>
+    // elements — or an API state that does not track the
+    // element actually rendering — reads as paused while
+    // the episode plays. Therefore every verdict in this
+    // chain is computed from the VIDEO MAP (ProbeJS
+    // .videoMap: every <video> element's paused /
+    // currentTime / duration / readyState), comparing
+    // like with like: a RESUME counts only when an
+    // element's paused flips true -> false AND its
+    // currentTime advances >= 0.8 s inside the window; a
+    // PAUSE counts only when the element that was playing
+    // reads paused. Buffering slides and API-state motion
+    // are NOT flips.
+    //
+    // The chain tries three explicitly labelled methods
+    // in order — M1 the player API (playVideo/pauseVideo),
+    // M2 the media element (play()/pause() on the carrier
+    // element, promise rejection captured), M3 a synthetic
+    // click at the carrier's centre (the door's click-v2
+    // event family) — each with a ~3 s confirm window,
+    // stopping at the first that flips the carrier. Every
+    // method logs its JS result/record (including any
+    // play() rejection text) and the map before -> after,
+    // so the log alone says WHICH method worked:
+    // "RESUME via M2 — el#1 paused 1 -> 0, t 568 -> 571".
+
+    private struct TransportOutcome {
+        /// Winning method label ("M1"/"M2"/"M3"), nil when
+        /// no method flipped the carrier.
+        var method: String?
+        /// The decidable one-liner.
+        var summary: String
+    }
+
+    /// One read of the video-element map.
+    private func readVideoMap() async -> ProbeVideoMap? {
+        let result = await evaluateAwait(ProbeJS.videoMap)
+        guard let result,
+              let data = result.data(using: .utf8)
+        else { return nil }
+        return try? JSONDecoder().decode(ProbeVideoMap.self, from: data)
+    }
+
+    /// Compact one-line rendering of a video map:
+    /// "videos=2 carrier=#1 [#0 p=1 t=568 d=2506 rs=3]
+    /// [#1 p=0 t=812 d=2506 rs=4]".
+    private static func mapLabel(_ map: ProbeVideoMap?) -> String {
+        guard let map else { return "videos=?" }
+        if map.count == 0 { return "videos=0" }
+        let parts = map.items.map {
+            "#\($0.i) p=\($0.paused ? 1 : 0) t=\(Int($0.t)) d=\(Int($0.d)) rs=\($0.rs)"
+        }
+        return "videos=\(map.count) carrier=#\(map.carrier) "
+            + parts.map { "[\($0)]" }.joined(separator: " ")
+    }
+
+    /// The READBACK MAP line for Probe 11's start: how
+    /// many <video> elements the page holds, which index
+    /// the legacy poll reads (always 0 — querySelector
+    /// returns the first), and which index carries the
+    /// playing episode. Retried for ~10 s because the
+    /// player boots after the page load finishes.
+    private func logReadbackMap() async {
+        guard let spec, spec.remoteForwarding else { return }
+        for _ in 0..<10 {
+            if let map = await readVideoMap(), map.count > 0 {
+                let carrier = map.item(map.carrier)
+                log(spec.tag, "READBACK MAP: \(Self.mapLabel(map)) — "
+                    + "legacy poll đọc el#\(map.legacy) (querySelector đầu tiên); "
+                    + "el mang tập = #\(map.carrier) "
+                    + "(paused=\(carrier?.paused == true ? 1 : 0) "
+                    + "d=\(Int(carrier?.d ?? 0)))")
+                return
+            }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        log(spec.tag, "READBACK MAP: không thấy <video> nào trong ~10s")
+    }
+
+    private func runTransportChain(context: String) async -> TransportOutcome {
+        guard let spec else {
+            return TransportOutcome(method: nil, summary: "no spec")
+        }
+        let tag = spec.tag
+        guard let before = await readVideoMap(), before.count > 0 else {
+            let summary = "KHÔNG — không đọc được bản đồ <video> "
+                + "(readback hỏng, không kết án được transport)"
+            log(tag, "transport [\(context)]: \(summary)")
+            return TransportOutcome(method: nil, summary: summary)
+        }
+        let wantPlay = !before.anyPlaying
+        let direction = wantPlay ? "RESUME" : "PAUSE"
+        log(tag, "transport [\(context)]: bắt đầu — hướng \(direction), "
+            + "before: \(Self.mapLabel(before))")
+        let methods: [(label: String, name: String, js: String)] = [
+            ("M1", "player API playVideo/pauseVideo", ProbeJS.transportM1),
+            ("M2", "media element play()/pause() on carrier", ProbeJS.transportM2),
+            ("M3", "synthetic click at carrier centre", ProbeJS.transportM3),
+        ]
+        var after = before
+        for method in methods {
+            let starter = await evaluateAwait(method.js)
+            log(tag, "transport [\(context)] \(method.label) (\(method.name)): "
+                + "JS → \(starter ?? "nil")")
+            var record = await evaluateAwait(ProbeJS.transportResult)
+            var winItem: ProbeVideoMap.Item?
+            var winT0: Double = 0
+            for _ in 0..<6 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard let cur = await readVideoMap() else { continue }
+                after = cur
+                if wantPlay {
+                    // Like with like: the SAME element,
+                    // paused -> unpaused, and its clock
+                    // actually advancing (>= 0.8 s).
+                    for item in cur.items where !item.paused && !item.ended {
+                        let t0 = before.item(item.i)?.t ?? 0
+                        if item.t - t0 >= 0.8 {
+                            winItem = item
+                            winT0 = t0
+                            break
+                        }
+                    }
+                } else if let carrierBefore = before.item(before.carrier),
+                          !carrierBefore.paused,
+                          let now = cur.item(before.carrier), now.paused {
+                    winItem = now
+                    winT0 = carrierBefore.t
+                }
+                if winItem != nil { break }
+            }
+            // Re-read the method's record at the end of its
+            // window: M2's play() promise settles async, so
+            // a rejection may only exist by now.
+            let recordEnd = await evaluateAwait(ProbeJS.transportResult)
+            if let recordEnd, recordEnd != record {
+                record = recordEnd
+                log(tag, "transport [\(context)] \(method.label) record → \(recordEnd)")
+            } else if let record {
+                log(tag, "transport [\(context)] \(method.label) record → \(record)")
+            }
+            if let win = winItem {
+                let summary = "\(direction) via \(method.label) — "
+                    + "el#\(win.i) paused \(wantPlay ? 1 : 0) -> \(wantPlay ? 0 : 1), "
+                    + "t \(Int(winT0)) -> \(Int(win.t))"
+                log(tag, "transport [\(context)]: \(summary)")
+                return TransportOutcome(method: method.label, summary: summary)
+            }
+            log(tag, "transport [\(context)] \(method.label): KHÔNG lật được carrier "
+                + "sau ~3s (\(Self.mapLabel(after)))")
+        }
+        let summary = "KHÔNG — M1/M2/M3 đều không \(wantPlay ? "phát lại" : "dừng") được: "
+            + "before \(Self.mapLabel(before)) -> after \(Self.mapLabel(after))"
+        log(tag, "transport [\(context)]: \(summary)")
+        return TransportOutcome(method: nil, summary: summary)
     }
 
     // MARK: Team B-3 (SPECULATION): Now Playing piggyback
@@ -722,8 +885,8 @@ struct PageProbeView: View {
 //   B. a pressesBegan(_:with:) override that intercepts
 //      .playPause and does NOT call super for that type.
 // Both report to the model's handleRemotePlayPause, which
-// owns the dedupe, the togglePlay forwarding and the poll
-// confirmation. No other press type is touched.
+// owns the dedupe, the transport-chain forwarding and the
+// video-map confirmation. No other press type is touched.
 
 struct G2ProbeWebView: UIViewControllerRepresentable {
     let controller: ProbeWebController
