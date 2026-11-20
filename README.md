@@ -89,7 +89,26 @@ có/không + độ dài).
    lúc phát thử là đúng. Kết luận nằm ở dòng "KẾT QUẢ
    probe15" cuối log (SIG/N: ĐẠT / GIẢI ĐƯỢC MÀ PHÁT CHẾT /
    BYTE-CHECK BỊ TỪ CHỐI / KHÔNG TRÍCH ĐƯỢC HÀM / EVAL LỖI).
-10. Các probe còn lại (2, 2b, 2c, 6, 5, E-P2, E-P6, C-3, 10, E-P4, 8)
+10. **Probe 16** — giải mã sig/n bằng EJS solver (bản 0.2.2):
+   Probe 15 đã chết vì hai lớp — nó tìm hàm trong SAI file
+   (bundle của app TV, không hề có bộ máy giải mã) và họ
+   pattern regex của yt-dlp đời cũ đã bị chính yt-dlp khai
+   tử ở thế hệ player hiện tại. Probe 16 đi đúng cách
+   yt-dlp đang dùng: solver EJS đóng gói sẵn trong app —
+   lấy player JS thật mà trang /tv nạp (tv-player-ias, có
+   kiểm dấu vết trước khi dùng), cho JavaScriptCore đọc
+   cây mã + chạy thử để nhận diện hai hàm sig/n theo hành
+   vi, rồi giải mã như Probe 15 (byte-check 137/140 +
+   phát thử muxed 18). Mở Probe 16 là nó TỰ CHẠY: lại hiện
+   MÃ KÍCH HOẠT (sandbox bị xoá khi cài bản mới — duyệt
+   một lần ở google.com/device bằng tài khoản Gold như
+   thường), nếu phát được thì **cứ để nó phát hết ~2 phút
+   rưỡi** như Probe 14/15. Màn hình chỉ có chữ cho tới lúc
+   phát thử là đúng. Kết luận nằm ở dòng "KẾT QUẢ probe16"
+   cuối log (EJS SIG/N: ĐẠT / SOLVER KHÔNG NẠP ĐƯỢC /
+   SOLVER KHÔNG NHẬN DIỆN ĐƯỢC / SOLVER CHẠY LỖI /
+   BYTE-CHECK BỊ TỪ CHỐI / GIẢI ĐƯỢC MÀ PHÁT CHẾT).
+11. Các probe còn lại (2, 2b, 2c, 6, 5, E-P2, E-P6, C-3, 10, E-P4, 8)
    chạy theo thời gian cho phép — mỗi probe đều tự kết luận trong log.
 
 Sau mỗi probe (hoặc cuối buổi): tải log ở màn hình chính YT Probe và
