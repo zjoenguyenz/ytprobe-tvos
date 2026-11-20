@@ -982,7 +982,7 @@ private struct SessionCookieSnapshot: Sendable {
 }
 
 enum ProbeAuthSession {
-    static func fetchCookies() async -> [SessionCookieSnapshot] {
+    fileprivate static func fetchCookies() async -> [SessionCookieSnapshot] {
         await withCheckedContinuation {
             (cont: CheckedContinuation<[SessionCookieSnapshot], Never>) in
             JoeWebBridge.fetchAllCookies { entries in
