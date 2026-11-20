@@ -90,6 +90,52 @@ import SwiftUI
 // request; a RELOAD_PLAYER_RESPONSE is logged, not acted
 // on. Token VALUES are never logged — presence, lengths
 // and expiry only, same posture as Probe 9.
+//
+// PHASE 1B ADDENDUM (0.1.9, owner approved 2026-11-20):
+// phase 1 measured the token-less door — both SABR POSTs
+// answered HTTP 403 with 0 bytes, no UMP parts at all.
+// Phase 1B changes exactly ONE variable family: the PO
+// token. The sequence is otherwise phase 1 verbatim
+// (identity → /player census → init rn=0 → media rn=1 →
+// at most one redirect). The mint follows the TV
+// living-room recipe (SABR-STUDY-20261120.md §2.4 + §5.2
+// phase 2; corroborated by BgUtils PR #44 EDIT 2 and
+// Morphe #2533, both read 2026-11-20):
+//   1. Scrape https://www.youtube.com/tv (Tizen UA) for
+//      the session identifiers — livingRoomPoTokenId if
+//      the page carries one, else ytcfg VISITOR_DATA.
+//      The identifier is the living-room SESSION, never
+//      the video id (the study's binding for TV).
+//   2. Challenge from the TV client's own config:
+//      GET youtube.com/tv_config?action_get_config=true
+//      &client=lb4&theme=cl (Tizen UA, Referer /tv) →
+//      strip the )]}' prefix → challengeParams.R (JSON)
+//      → bgChallenge {program, globalName, interpreter}
+//      + the per-response challengeRequestKey.
+//   3. Execute BotGuard inside a WKWebView (the view
+//      hosts a small bridge surface for this) — the JS
+//      harness is a faithful port of the canonical
+//      po_token.html BotGuardClient (BgUtils/NewPipe):
+//      loadBotGuard → snapshot → botguardResponse. One
+//      deliberate adaptation: vm.a receives document.body
+//      as the user-interaction element (the official web
+//      client passes a real element; the free-function
+//      ports pass undefined via the global object).
+//   4. POST the botguardResponse to GenerateIT at
+//      www.youtube.com/api/jnn/v1 with the tv_config
+//      challengeRequestKey → integrity token (bytes).
+//   5. obtainPoToken(webPoSignalOutput, integrityToken,
+//      identifier) inside the same WebView → the session
+//      PO token (raw bytes) → attached as
+//      streamer_context.po_token (field 2 — the raw
+//      bytes go in directly; SmartTube base64url-DECODES
+//      its token string into this same field).
+// A mint failure IS the phase-1B verdict (the study's
+// named NO-GO: attestation unsatisfiable on tvOS) — the
+// token-less POSTs are NOT repeated, phase 1 already
+// measured them. Token values never leave the device
+// except inside the SABR request itself; logs carry
+// presence + lengths only, like every credential here.
 
 // MARK: - Minimal protobuf writer (encode side)
 
@@ -766,8 +812,9 @@ struct SabrPlayerFormat {
 // Field numbers per the header comment. Omitted fields
 // stay at proto defaults ON PURPOSE (documented there):
 // player_time_ms = 0, enabled_track_types_bitfield = 0
-// (VIDEO_AND_AUDIO), buffered_ranges empty, no po_token,
-// no sabr_contexts, no subtitle preferences.
+// (VIDEO_AND_AUDIO), buffered_ranges empty, no
+// sabr_contexts, no subtitle preferences. Phase 1B:
+// po_token is written whenever the mint produced one.
 
 func sabrBuildRequest(clientVersion: String,
                       ustreamerConfig: Data?,
@@ -775,6 +822,7 @@ func sabrBuildRequest(clientVersion: String,
                       preferredAudio: SabrPlayerFormat?,
                       selected: [SabrPlayerFormat],
                       playbackCookie: [UInt8]?,
+                      poToken: Data?,
                       videoHeight: Int,
                       videoBitrate: Int) -> Data {
     // ClientAbrState
@@ -799,6 +847,9 @@ func sabrBuildRequest(clientVersion: String,
 
     var streamerContext = ProtoWriter()
     streamerContext.fieldBytes(1, clientInfo.data)
+    if let poToken, !poToken.isEmpty {
+        streamerContext.fieldBytes(2, poToken)               // po_token (raw token bytes, phase 1B)
+    }
     if let playbackCookie, !playbackCookie.isEmpty {
         streamerContext.fieldBytes(3, Data(playbackCookie))  // playback_cookie (raw echo)
     }
@@ -845,6 +896,16 @@ final class SabrRunState {
     }
 }
 
+// MARK: - PO-token mint outcome (phase 1B)
+
+enum SabrMintOutcome {
+    /// Raw token bytes, ready for streamer_context.
+    case token(Data)
+    /// The mint chain broke at a named, concrete step —
+    /// the string says exactly where (the verdict text).
+    case failed(step: String)
+}
+
 // MARK: - Model
 
 @MainActor
@@ -855,6 +916,17 @@ final class SabrProbeModel: ObservableObject {
     @Published var userCode: String?
     let verificationURL = "https://www.google.com/device"
     private var started = false
+
+    /// Phase 1B: the WebView surface the BotGuard mint
+    /// runs in. The view hosts it (a WKWebView only
+    /// executes while it sits in the hierarchy); the mint
+    /// step below drives it through this controller.
+    let mintController = ProbeWebController()
+
+    /// The Tizen TV UA Probe 9's /tv scrape proved out —
+    /// the same UA the phase-1B /tv + tv_config fetches
+    /// and the mint page load use.
+    static let tizenUA = "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.5) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/5.0 Chrome/85.0.4183.120 TV Safari/537.36"
 
     func start() {
         guard !started else { return }
@@ -875,7 +947,7 @@ final class SabrProbeModel: ObservableObject {
 
     private func finish(_ verdictLine: String) {
         verdict = verdictLine
-        log("KẾT QUẢ probe13: \(verdictLine)")
+        log("KẾT QUẢ probe13b: \(verdictLine)")
         log("Gửi file log về như thường lệ (link ở màn hình chính) — toàn bộ kiểm kê nằm trong log.")
     }
 
@@ -1234,6 +1306,405 @@ final class SabrProbeModel: ObservableObject {
         }
     }
 
+    // MARK: PO-token mint (phase 1B — TV living-room recipe)
+    //
+    // Steps per the header addendum. Every failure returns
+    // .failed with the concrete step; every value that
+    // crosses a trust boundary (page HTML, tv_config JSON,
+    // GenerateIT answer, WebView results) is parsed with
+    // guards — no force-unwraps anywhere below.
+
+    private func fetchTextWithStatus(_ urlString: String, userAgent: String,
+                                     referer: String?) async -> (http: Int, text: String)? {
+        guard let url = URL(string: urlString) else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 20
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        if let referer {
+            request.setValue(referer, forHTTPHeaderField: "Referer")
+        }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let http = (response as? HTTPURLResponse)?.statusCode ?? -1
+            return (http, String(decoding: data, as: UTF8.self))
+        } catch {
+            return nil
+        }
+    }
+
+    private func jnnPost(_ urlString: String, array: [Any],
+                         userAgent: String) async -> (http: Int, array: [Any]?, bytes: Int) {
+        guard let url = URL(string: urlString),
+              let body = try? JSONSerialization.data(withJSONObject: array) else {
+            return (0, nil, 0)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json+protobuf", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("grpc-web-javascript/0.1", forHTTPHeaderField: "x-user-agent")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.httpBody = body
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let http = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [Any]
+            return (http, parsed, data.count)
+        } catch {
+            log("mint: POST jnn lỗi mạng — \(error.localizedDescription)")
+            return (0, nil, 0)
+        }
+    }
+
+    /// JSON-encode one string as a JS-safe literal
+    /// (serialise a one-element array, strip the brackets).
+    private func jsonEncodedString(_ string: String) -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: [string]),
+              let text = String(data: data, encoding: .utf8), text.count >= 2 else {
+            return nil
+        }
+        return String(text.dropFirst().dropLast())
+    }
+
+    private func jsonEncodedObject(_ object: [String: Any]) -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: object) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func evaluateMintJS(_ js: String) async -> String? {
+        await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
+            mintController.evaluateForResult(js) { result in
+                cont.resume(returning: result)
+            }
+        }
+    }
+
+    /// Poll window.__probeMint until a terminal step shows
+    /// or the budget runs out; logs every step transition.
+    private func pollMintState(terminalSteps: Set<String>,
+                               timeoutSeconds: Int) async -> [String: Any]? {
+        var lastStep = ""
+        var lastState: [String: Any]?
+        let polls = max(1, timeoutSeconds * 2 / 3)
+        for _ in 0..<polls {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard let raw = await evaluateMintJS("JSON.stringify(window.__probeMint || {step: 'gone'})"),
+                  let data = raw.data(using: .utf8),
+                  let state = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let step = state["step"] as? String else { continue }
+            lastState = state
+            if step != lastStep {
+                lastStep = step
+                log("mint: bước WebView → \(step)")
+            }
+            if terminalSteps.contains(step) { return state }
+        }
+        return lastState
+    }
+
+    private func mintPoToken() async -> SabrMintOutcome {
+        // 1 — Session identifiers from the /tv page.
+        guard let tvHTML = await fetchText("https://www.youtube.com/tv",
+                                            userAgent: Self.tizenUA) else {
+            return .failed(step: "cạo trang /tv — fetch lỗi, không lấy được trang để tìm livingRoomPoTokenId/visitorData")
+        }
+        let livingRoom = firstRegexCapture(in: tvHTML, pattern: "\"livingRoomPoTokenId\"\\s*:\\s*\"([^\"]+)\"")
+            ?? firstRegexCapture(in: tvHTML, pattern: "\"LIVING_ROOM_PO_TOKEN_ID\"\\s*:\\s*\"([^\"]+)\"")
+        let visitor = firstRegexCapture(in: tvHTML, pattern: "\"VISITOR_DATA\"\\s*:\\s*\"([^\"]+)\"")
+            ?? firstRegexCapture(in: tvHTML, pattern: "\"visitorData\"\\s*:\\s*\"([^\"]+)\"")
+        log("mint: /tv scrape (\(tvHTML.count) bytes) — livingRoomPoTokenId \(livingRoom.map { "CÓ (len \($0.count))" } ?? "KHÔNG THẤY") · visitorData \(visitor.map { "CÓ (len \($0.count))" } ?? "KHÔNG THẤY")")
+        guard let identifier = livingRoom ?? visitor else {
+            return .failed(step: "cạo trang /tv — không thấy livingRoomPoTokenId lẫn VISITOR_DATA trong HTML /tv")
+        }
+        let identifierKind = livingRoom != nil ? "livingRoomPoTokenId" : "visitorData"
+        log("mint: identifier của mint = \(identifierKind) (len \(identifier.count), không ghi giá trị)")
+
+        // 2 — The TV client's own challenge (tv_config).
+        let configURL = "https://www.youtube.com/tv_config?action_get_config=true&client=lb4&theme=cl"
+        guard let configFetch = await fetchTextWithStatus(configURL, userAgent: Self.tizenUA,
+                                                          referer: "https://www.youtube.com/tv") else {
+            return .failed(step: "tv_config — fetch lỗi mạng")
+        }
+        log("mint: tv_config HTTP \(configFetch.http) · \(configFetch.text.count) bytes")
+        guard configFetch.http == 200 else {
+            return .failed(step: "tv_config — HTTP \(configFetch.http)")
+        }
+        var configText = configFetch.text
+        if configText.hasPrefix(")]}'") { configText = String(configText.dropFirst(4)) }
+        configText = configText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let configData = configText.data(using: .utf8),
+              let root = (try? JSONSerialization.jsonObject(with: configData)) as? [String: Any] else {
+            return .failed(step: "tv_config — đáp án không phải JSON object")
+        }
+        let challengeParams = root["challengeParams"] as? [String: Any]
+        var rObject: [String: Any]?
+        if let rString = challengeParams?["R"] as? String,
+           let rData = rString.data(using: .utf8) {
+            rObject = (try? JSONSerialization.jsonObject(with: rData)) as? [String: Any]
+        } else if let rDict = challengeParams?["R"] as? [String: Any] {
+            rObject = rDict
+        }
+        log("mint: tv_config keys — root: \(root.keys.sorted().joined(separator: ",")) · challengeParams: \(challengeParams?.keys.sorted().joined(separator: ",") ?? "—") · R: \(rObject?.keys.sorted().joined(separator: ",") ?? "—")")
+        let bgChallenge = (rObject?["bgChallenge"] as? [String: Any])
+            ?? (challengeParams?["bgChallenge"] as? [String: Any])
+            ?? (rObject?.keys.contains("program") == true ? rObject : nil)
+        let requestKey = (rObject?["challengeRequestKey"] as? String)
+            ?? (challengeParams?["challengeRequestKey"] as? String)
+            ?? (root["challengeRequestKey"] as? String)
+        guard let bgChallenge,
+              let program = bgChallenge["program"] as? String,
+              let globalName = bgChallenge["globalName"] as? String else {
+            return .failed(step: "tv_config — không tìm thấy bgChallenge/program/globalName (kho keys đã ghi ở trên)")
+        }
+        guard let requestKey else {
+            return .failed(step: "tv_config — không tìm thấy challengeRequestKey cho GenerateIT")
+        }
+        log("mint: bgChallenge CÓ — program len \(program.count) · globalName \"\(globalName)\" · challengeRequestKey len \(requestKey.count)")
+
+        // 2b — The BotGuard interpreter: inline if the
+        // challenge carries it, else fetch its URL.
+        var interpreterSource: String?
+        var interpreterOrigin = ""
+        if let wrapped = bgChallenge["interpreterJavascript"] as? [String: Any] {
+            if let inline = wrapped["privateDoNotAccessOrElseSafeScriptWrappedValue"] as? String,
+               !inline.isEmpty {
+                interpreterSource = inline
+                interpreterOrigin = "inline trong bgChallenge"
+            } else if let urlString = wrapped["privateDoNotAccessOrElseSafeResourceUrlWrappedValue"] as? String,
+                      let fetched = await fetchText(urlString, userAgent: Self.tizenUA) {
+                interpreterSource = fetched
+                interpreterOrigin = "URL trong bgChallenge (host \(URL(string: urlString)?.host ?? "?"))"
+            }
+        }
+        if interpreterSource == nil, let urlValue = bgChallenge["interpreterUrl"] {
+            let urlString = (urlValue as? String)
+                ?? ((urlValue as? [String: Any])?["privateDoNotAccessOrElseSafeResourceUrlWrappedValue"] as? String)
+            if let urlString, let fetched = await fetchText(urlString, userAgent: Self.tizenUA) {
+                interpreterSource = fetched
+                interpreterOrigin = "interpreterUrl (host \(URL(string: urlString)?.host ?? "?"))"
+            }
+        }
+        guard let interpreter = interpreterSource else {
+            return .failed(step: "tv_config — bgChallenge không có interpreter dùng được (inline lẫn URL đều trống/hỏng)")
+        }
+        log("mint: interpreter từ \(interpreterOrigin) — \(interpreter.count) bytes")
+
+        // 3 — Run BotGuard in the WebView.
+        var challengeForJS: [String: Any] = [
+            "program": program,
+            "globalName": globalName,
+            "interpreterJavascript": [
+                "privateDoNotAccessOrElseSafeScriptWrappedValue": interpreter,
+            ],
+        ]
+        if let blob = bgChallenge["clientExperimentsStateBlob"] as? String {
+            challengeForJS["clientExperimentsStateBlob"] = blob
+            log("mint: clientExperimentsStateBlob CÓ (len \(blob.count)) — chuyển kèm vào WebView")
+        }
+        guard let inputJSON = jsonEncodedObject(["challenge": challengeForJS]) else {
+            return .failed(step: "mint — không JSON-encode được challenge để đưa vào WebView")
+        }
+        log("mint: nạp trang /tv vào WebView mint…")
+        mintController.load(url: "https://www.youtube.com/tv",
+                            userAgent: Self.tizenUA, lockedURL: nil)
+        var pageReady = false
+        for _ in 0..<20 {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if await evaluateMintJS("document.readyState") == "complete" {
+                pageReady = true
+                break
+            }
+        }
+        guard pageReady else {
+            return .failed(step: "WebView — trang /tv không load xong trong ~30s (readyState không tới complete)")
+        }
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        _ = await evaluateMintJS("window.__probeMintInput = \(inputJSON); 'set'")
+        let installResult = await evaluateMintJS(Self.mintHarnessJS)
+        log("mint: harness BotGuard cài xong (\(installResult ?? "không đáp")) — chờ snapshot…")
+        guard installResult == "started" else {
+            return .failed(step: "WebView — script mint không khởi động được (evaluate trả \(installResult ?? "nil"))")
+        }
+        let snapState = await pollMintState(terminalSteps: ["snapshot-done", "botguard-error", "gone"],
+                                            timeoutSeconds: 60)
+        guard let snapStep = snapState?["step"] as? String, snapStep == "snapshot-done" else {
+            let step = (snapState?["step"] as? String) ?? "timeout"
+            let error = (snapState?["error"] as? String) ?? ""
+            return .failed(step: "BotGuard trong WebView dừng ở bước '\(step)'\(error.isEmpty ? "" : " — \(error)")")
+        }
+        guard let botguardResponse = await evaluateMintJS("window.__probeMintResult.botguardResponse"),
+              !botguardResponse.isEmpty else {
+            return .failed(step: "BotGuard — snapshot báo xong nhưng botguardResponse rỗng/không đọc được từ trang")
+        }
+        log("mint: snapshot OK — botguardResponse len \(botguardResponse.count) (không ghi giá trị)")
+
+        // 4 — GenerateIT: botguardResponse → integrity token.
+        let generateIT = await jnnPost("https://www.youtube.com/api/jnn/v1/GenerateIT",
+                                       array: [requestKey, botguardResponse],
+                                       userAgent: Self.tizenUA)
+        log("mint: GenerateIT HTTP \(generateIT.http) · \(generateIT.bytes)B")
+        guard generateIT.http == 200, let answer = generateIT.array,
+              let tokenString = answer.first as? String,
+              let integrityBytes = decodeBase64Loose(tokenString) else {
+            return .failed(step: "GenerateIT — HTTP \(generateIT.http), đáp án không chứa integrity token ở phần tử [0]")
+        }
+        let ttl = answer.count > 1 ? (answer[1] as? NSNumber)?.intValue : nil
+        log("mint: integrity token CÓ — \(integrityBytes.count)B · TTL \(ttl.map { "\($0)s" } ?? "?") (không ghi giá trị)")
+
+        // 5 — obtainPoToken in the page → the session token.
+        let bytesJSON = "[" + integrityBytes.map { "\($0)" }.joined(separator: ",") + "]"
+        _ = await evaluateMintJS("window.__probeMintInput.integrityTokenBytes = \(bytesJSON); 'set'")
+        guard let identifierJSON = jsonEncodedString(identifier) else {
+            return .failed(step: "mint — không JSON-encode được identifier")
+        }
+        _ = await evaluateMintJS("window.__probeMintInput.identifier = \(identifierJSON); 'set'")
+        let finishStep = await evaluateMintJS(Self.mintFinishJS)
+        guard finishStep == "token-done" else {
+            let error = await evaluateMintJS("window.__probeMint.error") ?? ""
+            return .failed(step: "obtainPoToken trong WebView dừng ở bước '\(finishStep ?? "không đáp")'\(error.isEmpty ? "" : " — \(error)")")
+        }
+        guard let tokenB64 = await evaluateMintJS("window.__probeMint.tokenB64"),
+              let tokenData = decodeBase64Loose(tokenB64), !tokenData.isEmpty else {
+            return .failed(step: "obtainPoToken — tokenB64 không đọc/giải mã được từ trang")
+        }
+        log("mint: PO token ĐÃ MINT — len \(tokenData.count) (chỉ ghi độ dài; giá trị không rời máy trừ trong request SABR)")
+        return .token(tokenData)
+    }
+
+    /// The BotGuard harness — a faithful port of the
+    /// canonical po_token.html BotGuardClient (BgUtils /
+    /// NewPipe), restructured to explicit global state
+    /// (the sanctioned this-binding fix). Runs the
+    /// interpreter, drives vm.a, snapshots. State lands in
+    /// window.__probeMint; the snapshot result in
+    /// window.__probeMintResult.
+    static let mintHarnessJS = #"""
+        (function () {
+          var S = window.__probeMint = {
+            step: 'init', error: '', tokenB64: '', tokenLen: 0, bgResponseLen: 0
+          };
+          var BG = { vmFunctions: null, syncSnapshotFunction: null };
+
+          function loadBotGuard(challengeData) {
+            var vm = window[challengeData.globalName];
+            if (!vm) throw new Error('[BotGuardClient]: VM not found in the global object');
+            if (!vm.a) throw new Error('[BotGuardClient]: Could not load program');
+            var vmFunctionsCallback = function (asyncSnapshotFunction, shutdownFunction,
+                                                passEventFunction, checkCameraFunction) {
+              BG.vmFunctions = {
+                asyncSnapshotFunction: asyncSnapshotFunction,
+                shutdownFunction: shutdownFunction,
+                passEventFunction: passEventFunction,
+                checkCameraFunction: checkCameraFunction
+              };
+            };
+            BG.syncSnapshotFunction = vm.a(challengeData.program, vmFunctionsCallback, true,
+              document.body, function () {}, [[], []])[0];
+            return new Promise(function (resolve, reject) {
+              var i = 0;
+              var refreshIntervalId = setInterval(function () {
+                if (BG.vmFunctions && BG.vmFunctions.asyncSnapshotFunction) {
+                  resolve(BG);
+                  clearInterval(refreshIntervalId);
+                }
+                if (i >= 10000) {
+                  reject(new Error('asyncSnapshotFunction is null even after 10 seconds'));
+                  clearInterval(refreshIntervalId);
+                }
+                i += 1;
+              }, 1);
+            });
+          }
+
+          function snapshot(args) {
+            return new Promise(function (resolve, reject) {
+              if (!BG.vmFunctions || !BG.vmFunctions.asyncSnapshotFunction) {
+                reject(new Error('[BotGuardClient]: Async snapshot function not found'));
+                return;
+              }
+              BG.vmFunctions.asyncSnapshotFunction(function (response) { resolve(response); }, [
+                args.contentBinding,
+                args.signedTimestamp,
+                args.webPoSignalOutput,
+                args.skipPrivacyBuffer
+              ]);
+            });
+          }
+
+          function runBotGuard(challengeData) {
+            var interpreterJavascript =
+              challengeData.interpreterJavascript.privateDoNotAccessOrElseSafeScriptWrappedValue;
+            if (interpreterJavascript) {
+              new Function(interpreterJavascript)();
+            } else {
+              throw new Error('Could not load VM');
+            }
+            var webPoSignalOutput = [];
+            return loadBotGuard({
+              globalName: challengeData.globalName,
+              program: challengeData.program
+            }).then(function () {
+              return snapshot({ webPoSignalOutput: webPoSignalOutput });
+            }).then(function (botguardResponse) {
+              return { webPoSignalOutput: webPoSignalOutput, botguardResponse: botguardResponse };
+            });
+          }
+
+          function obtainPoToken(webPoSignalOutput, integrityToken, identifier) {
+            var getMinter = webPoSignalOutput[0];
+            if (!getMinter) throw new Error('PMD:Undefined');
+            var mintCallback = getMinter(integrityToken);
+            if (!(mintCallback instanceof Function)) throw new Error('APF:Failed');
+            var result = mintCallback(identifier);
+            if (!result) throw new Error('YNJ:Undefined');
+            if (!(result instanceof Uint8Array)) throw new Error('ODM:Invalid');
+            return result;
+          }
+
+          window.__probeMintObtain = obtainPoToken;
+
+          var input = window.__probeMintInput || {};
+          S.step = 'running-botguard';
+          runBotGuard(input.challenge).then(function (result) {
+            window.__probeMintResult = result;
+            S.bgResponseLen = result.botguardResponse ? String(result.botguardResponse).length : 0;
+            S.step = 'snapshot-done';
+          }).catch(function (e) {
+            S.step = 'botguard-error';
+            S.error = String((e && e.message) || e).slice(0, 120);
+          });
+          return 'started';
+        })()
+        """#
+
+    /// Second mint half: integrity token + identifier in,
+    /// PO token (base64) out via window.__probeMint.
+    static let mintFinishJS = #"""
+        (function () {
+          var S = window.__probeMint;
+          var input = window.__probeMintInput || {};
+          var result = window.__probeMintResult;
+          try {
+            if (!result) throw new Error('no snapshot result');
+            var integrity = new Uint8Array(input.integrityTokenBytes || []);
+            var identifier = new TextEncoder().encode(String(input.identifier || ''));
+            var token = window.__probeMintObtain(result.webPoSignalOutput, integrity, identifier);
+            var binary = '';
+            for (var i = 0; i < token.length; i++) binary += String.fromCharCode(token[i]);
+            S.tokenB64 = btoa(binary);
+            S.tokenLen = token.length;
+            S.step = 'token-done';
+          } catch (e) {
+            S.step = 'mint-error';
+            S.error = String((e && e.message) || e).slice(0, 120);
+          }
+          return S.step;
+        })()
+        """#
+
     // MARK: The run
 
     private func run() async {
@@ -1244,16 +1715,16 @@ final class SabrProbeModel: ObservableObject {
         verdict = ""
         userCode = nil
 
-        log("=== PROBE 13 — SABR PHA 1 (fetcher tối thiểu) ===")
-        log("Tập Gold: \(ProbeTargets.goldEp1) · Mục tiêu: attestation? + AVC/AAC? + segment thật? — chỉ fetch + parse, KHÔNG phát hình")
+        log("=== PROBE 13 — SABR PHA 1B (fetcher + PO token) ===")
+        log("Tập Gold: \(ProbeTargets.goldEp1) · Mục tiêu: mint PO token theo recipe TV rồi gắn vào SABR — attestation qua được không + AVC/AAC? + segment thật? — chỉ fetch + parse, KHÔNG phát hình")
 
         guard let initialToken = await acquireToken() else {
-            finish("SABR PHA 1: KHÔNG KẾT ÁN ĐƯỢC — không lấy được access token (xem các dòng identity ở trên)")
+            finish("SABR PHA 1B: KHÔNG KẾT ÁN ĐƯỢC — không lấy được access token (xem các dòng identity ở trên)")
             return
         }
 
         guard let spec = tvSpec() else {
-            finish("SABR PHA 1: KHÔNG KẾT ÁN ĐƯỢC — không đọc được spec TVHTML5 từ ladder đóng gói")
+            finish("SABR PHA 1B: KHÔNG KẾT ÁN ĐƯỢC — không đọc được spec TVHTML5 từ ladder đóng gói")
             return
         }
 
@@ -1278,14 +1749,14 @@ final class SabrProbeModel: ObservableObject {
             }
         }
         guard player.http == 200, let json = player.json else {
-            finish("SABR PHA 1: KHÔNG KẾT ÁN ĐƯỢC — /player HTTP \(player.http) sau mọi lần thử identity")
+            finish("SABR PHA 1B: KHÔNG KẾT ÁN ĐƯỢC — /player HTTP \(player.http) sau mọi lần thử identity")
             return
         }
         let playability = (json["playabilityStatus"] as? [String: Any])?["status"] as? String ?? "?"
         let playabilityReason = (json["playabilityStatus"] as? [String: Any])?["reason"] as? String
         log("player: HTTP 200 · playability=\(playability)\(playabilityReason.map { " · reason \"\($0)\"" } ?? "")")
         guard playability == "OK" else {
-            finish("SABR PHA 1: KHÔNG KẾT ÁN ĐƯỢC — playability=\(playability) (không phải OK) nên không có SABR stream để thử")
+            finish("SABR PHA 1B: KHÔNG KẾT ÁN ĐƯỢC — playability=\(playability) (không phải OK) nên không có SABR stream để thử")
             return
         }
 
@@ -1293,7 +1764,7 @@ final class SabrProbeModel: ObservableObject {
         guard let sabrURLString = streaming?["serverAbrStreamingUrl"] as? String,
               let sabrBaseURL = URL(string: sabrURLString) else {
             log("player: serverAbrStreamingUrl = NO — response này không phải SABR")
-            finish("SABR PHA 1: KHÔNG KẾT ÁN ĐƯỢC — /player không trả serverAbrStreamingUrl")
+            finish("SABR PHA 1B: KHÔNG KẾT ÁN ĐƯỢC — /player không trả serverAbrStreamingUrl")
             return
         }
         log("player: serverAbrStreamingUrl = YES · host \(sabrBaseURL.host ?? "?")")
@@ -1345,12 +1816,12 @@ final class SabrProbeModel: ObservableObject {
         let audioChoice = aacAudios.max(by: { $0.bitrate < $1.bitrate })
 
         if formats.isEmpty {
-            finish("SABR PHA 1: KHÔNG KẾT ÁN ĐƯỢC — /player OK nhưng adaptiveFormats rỗng")
+            finish("SABR PHA 1B: KHÔNG KẾT ÁN ĐƯỢC — /player OK nhưng adaptiveFormats rỗng")
             return
         }
         if avcVideos.isEmpty {
             log("player: toàn bộ video là VP9/WebM (hoặc codec khác ngoài avc1) — AVPlayer không nạp được")
-            finish("SABR PHA 1: CHẾT Ở FORMAT — không có AVC (avc1), chỉ có WebM/VP9 (AVPlayer không nạp được)")
+            finish("SABR PHA 1B: KHÔNG KẾT ÁN ĐƯỢC — chết ở format: không có AVC (avc1), chỉ có WebM/VP9 (AVPlayer không nạp được)")
             return
         }
         if let videoChoice {
@@ -1360,6 +1831,21 @@ final class SabrProbeModel: ObservableObject {
             log("chọn: AUDIO itag \(audioChoice.itag) \"\(audioChoice.mimeType)\" bitrate \(audioChoice.bitrate)")
         } else {
             log("chọn: AUDIO — KHÔNG có AAC; vẫn thử SABR bằng video đơn lẻ (attestation vẫn kết án được)")
+        }
+
+        // Phase 1B: mint the TV session PO token. A mint
+        // failure IS the verdict (the study's named
+        // NO-GO) — the token-less POSTs are not repeated;
+        // phase 1 already measured them (403, 0 bytes).
+        log("mint: bắt đầu chặng PO token — recipe TV: /tv scrape → tv_config → BotGuard trong WebView → GenerateIT → obtainPoToken")
+        let poToken: Data
+        switch await mintPoToken() {
+        case .failed(let step):
+            finish("SABR PHA 1B: MINT THẤT BẠI — \(step)")
+            return
+        case .token(let minted):
+            poToken = minted
+            log("mint: token sẵn sàng (len \(minted.count)) — gắn vào streamer_context.po_token (field 2) cho cả init + media")
         }
 
         // SABR requests: init (rn=0), media (rn=1), at
@@ -1375,10 +1861,12 @@ final class SabrProbeModel: ObservableObject {
             preferredAudio: audioChoice,
             selected: [],
             playbackCookie: nil,
+            poToken: poToken,
             videoHeight: videoChoice?.height ?? 0,
             videoBitrate: videoChoice?.bitrate ?? 0)
-        log("sabr[init]: POST rn=0 · body \(initBody.count)B · selected=[] (init) · preferred video \(videoChoice?.itag ?? -1) / audio \(audioChoice?.itag ?? -1)")
+        log("sabr[init]: POST rn=0 · body \(initBody.count)B · selected=[] (init) · preferred video \(videoChoice?.itag ?? -1) / audio \(audioChoice?.itag ?? -1) · poToken CÓ (len \(poToken.count))")
         let initResponse = await sabrPost(baseURL: currentURL, rn: 0, body: initBody, userAgent: spec.userAgent)
+        let initHTTP = initResponse.http
         processSabrResponse(label: "init rn=0", http: initResponse.http,
                             data: initResponse.data, contentType: initResponse.contentType,
                             state: state)
@@ -1405,9 +1893,10 @@ final class SabrProbeModel: ObservableObject {
             preferredAudio: audioChoice,
             selected: selected,
             playbackCookie: state.playbackCookie,
+            poToken: poToken,
             videoHeight: videoChoice?.height ?? 0,
             videoBitrate: videoChoice?.bitrate ?? 0)
-        log("sabr[media]: POST rn=1 · body \(mediaBody.count)B · selected=\(selected.map { String($0.itag) }.joined(separator: ",")) · playbackCookie \(state.playbackCookie != nil ? "CÓ (echo)" : "không")")
+        log("sabr[media]: POST rn=1 · body \(mediaBody.count)B · selected=\(selected.map { String($0.itag) }.joined(separator: ",")) · playbackCookie \(state.playbackCookie != nil ? "CÓ (echo)" : "không") · poToken CÓ (len \(poToken.count))")
         let mediaResponse = await sabrPost(baseURL: currentURL, rn: 1, body: mediaBody, userAgent: spec.userAgent)
         processSabrResponse(label: "media rn=1", http: mediaResponse.http,
                             data: mediaResponse.data, contentType: mediaResponse.contentType,
@@ -1445,40 +1934,40 @@ final class SabrProbeModel: ObservableObject {
         let totalParts = state.partCounts.values.reduce(0) { $0 + $1.count }
         log("soát: tổng \(totalParts) part · format-init itags: \(state.formatInitItags.isEmpty ? "không" : state.formatInitItags.map { "\($0)" }.joined(separator: ",")) · protection statuses: \(state.protectionSeen.isEmpty ? "không có part nào" : state.protectionSeen.map { "\($0)" }.joined(separator: ","))")
 
-        // Verdict — the study's phase-1 test, verbatim
-        // strings.
+        // Verdict — phase 1B strings (the leader's brief,
+        // verbatim shapes).
         if state.protectionSeen.contains(3) {
-            finish("SABR PHA 1: CHẶN Ở ATTESTATION — status=ATTESTATION_REQUIRED (3)")
+            finish("SABR PHA 1B: CHẶN Ở ATTESTATION — status=ATTESTATION_REQUIRED (3)")
             return
         }
-        if state.protectionSeen.last == 2 {
-            finish("SABR PHA 1: CHẶN Ở ATTESTATION — status=ATTESTATION_PENDING (2)")
+        if state.protectionSeen.last == 2, !mediaComplete {
+            finish("SABR PHA 1B: CHẶN Ở ATTESTATION — status=ATTESTATION_PENDING (2)")
             return
         }
-        if let firstError = state.sabrErrors.first, !mediaComplete {
-            finish("SABR PHA 1: KHÔNG — SabrError type=\"\(firstError.type)\" code=\(firstError.code) (kiểm kê part ở trên)")
-            return
-        }
-        if state.sawReload, !mediaComplete {
-            finish("SABR PHA 1: KHÔNG — server trả RELOAD_PLAYER_RESPONSE và không có media hoàn chỉnh (phiên bị thu hồi)")
-            return
-        }
-        if mediaComplete {
-            if state.protectionSeen.last == 1 {
-                finish("SABR PHA 1: ĐẠT (không cần attestation)")
-                return
+        if videoComplete, audioComplete, let videoChoice, let audioChoice {
+            let protectionLabel: String
+            if let lastStatus = state.protectionSeen.last {
+                protectionLabel = lastStatus == 1 ? "OK (1)"
+                    : (lastStatus == 2 ? "ATTESTATION_PENDING (2)" : "\(lastStatus)")
+            } else {
+                protectionLabel = "không có part"
             }
-            if state.protectionSeen.isEmpty {
-                log("soát: KHÔNG có part STREAM_PROTECTION_STATUS nào trong mọi response — không bị đòi attestation, ghi rõ để đối chiếu")
-                finish("SABR PHA 1: ĐẠT (không cần attestation)")
-                return
-            }
+            finish("SABR PHA 1B: ĐẠT — segment thật đã về (video itag \(videoChoice.itag) init+media hoàn chỉnh, audio itag \(audioChoice.itag) init+media hoàn chỉnh), protection=\(protectionLabel)")
+            return
+        }
+        if initHTTP == 403 {
+            finish("SABR PHA 1B: MINT OK NHƯNG VẪN 403 — token len \(poToken.count) đã gắn, POST init vẫn HTTP 403")
+            return
         }
         var why = "init/media hoàn chỉnh: video \(videoComplete ? "ĐẠT" : "CHƯA"), audio \(audioComplete ? "ĐẠT" : "CHƯA")"
+        if let firstError = state.sabrErrors.first {
+            why += "; SabrError type=\"\(firstError.type)\" code=\(firstError.code)"
+        }
+        if state.sawReload { why += "; server trả RELOAD_PLAYER_RESPONSE" }
         if let note = state.transportNote { why += "; \(note)" }
         if state.protectionUndecodable > 0 { why += "; \(state.protectionUndecodable) part protection không giải mã được" }
         why += "; tổng \(totalParts) part đã kiểm kê ở trên"
-        finish("SABR PHA 1: KHÔNG KẾT ÁN ĐƯỢC — \(why)")
+        finish("SABR PHA 1B: KHÔNG KẾT ÁN ĐƯỢC — \(why)")
     }
 
     static func timeLabel(_ date: Date) -> String {
@@ -1496,9 +1985,9 @@ struct SabrProbeView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Probe 13 — SABR pha 1 (fetcher tối thiểu)")
+            Text("Probe 13 — SABR pha 1B (fetcher + PO token)")
                 .font(.title3).bold()
-            Text("Tái dùng danh tính OAuth của Probe 9 — nếu token đã mất theo các lần xoá app, probe tự chạy lại cửa device-code ngay tại đây. Sau đó lấy /player TVHTML5 cho tập Gold và POST thử SABR, kiểm kê từng part UMP: attestation (StreamProtectionStatus), AVC/AAC, init + media segment thật. Chỉ fetch + parse — không phát hình.")
+            Text("Như pha 1 (danh tính OAuth của Probe 9 — mất token thì tự chạy lại cửa device-code tại đây; /player TVHTML5 cho tập Gold; POST thử SABR, kiểm kê từng part UMP) — cộng chặng mới: mint PO token theo recipe TV (tv_config → BotGuard trong WebView bên dưới → GenerateIT) rồi gắn vào request SABR. Chỉ fetch + parse — không phát hình.")
                 .font(.footnote).foregroundStyle(.secondary)
             if let code = model.userCode {
                 VStack(spacing: 8) {
@@ -1518,8 +2007,15 @@ struct SabrProbeView: View {
             if !model.verdict.isEmpty {
                 Text(model.verdict)
                     .font(.headline)
-                    .foregroundStyle(model.verdict.hasPrefix("SABR PHA 1: ĐẠT") ? Color.green : Color.red)
+                    .foregroundStyle(model.verdict.hasPrefix("SABR PHA 1B: ĐẠT") ? Color.green : Color.red)
             }
+            Text("Bề mặt WebView cho chặng mint BotGuard (recipe TV) — nó tự chạy khi tới chặng mint, không cần bấm gì:")
+                .font(.footnote).foregroundStyle(.secondary)
+            ProbeWebView(controller: model.mintController,
+                         navigationMode: .doorRoam,
+                         playbackPresses: false)
+                .frame(height: 150)
+                .background(Color.black)
             ScrollView {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(Array(model.lines.enumerated()), id: \.offset) { _, line in

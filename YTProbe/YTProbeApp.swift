@@ -99,7 +99,7 @@ struct ProbeRootView: View {
                     (.door4, "Probe 4 · Cửa đăng nhập Gold"),
                     (.gold11, "Probe 11 · Trang Gold sau đăng nhập (G-2)"),
                     (.probe12, "Probe 12 · Trích xuất Gold sau đăng nhập (ma trận có cookie)"),
-                    (.probe13, "Probe 13 · SABR pha 1 (fetcher tối thiểu)"),
+                    (.probe13, "Probe 13 · SABR pha 1B (fetcher + PO token)"),
                 ])
                 group("NHÓM TRANG PHIM", [
                     (.probe2, "Probe 2 · Trang desktop (Safari UA + MSE)"),
