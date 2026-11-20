@@ -24,6 +24,7 @@ targets:
       - YTProbe/ProbeSabr.swift
       - YTProbe/ProbeDoor.swift
       - YTProbe/ProbeDevice.swift
+      - YTProbe/ProbeDowngraded.swift
       - YTProbe/JoeWebBridge.h
       - YTProbe/JoeWebBridge.m
       - YTProbe/YTProbe-Bridging-Header.h
@@ -32,15 +33,15 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.luun.nguyen.ytprobe
         INFOPLIST_FILE: InfoYTProbe.plist
         SWIFT_OBJC_BRIDGING_HEADER: YTProbe/YTProbe-Bridging-Header.h
-        MARKETING_VERSION: "0.1.9"
-        CURRENT_PROJECT_VERSION: "10"
+        MARKETING_VERSION: "0.2.0"
+        CURRENT_PROJECT_VERSION: "11"
     info:
       path: InfoYTProbe.plist
       properties:
         CFBundleDisplayName: "YT Probe"
         CFBundleName: "YT Probe"
-        CFBundleShortVersionString: "0.1.9"
-        CFBundleVersion: "10"
+        CFBundleShortVersionString: "0.2.0"
+        CFBundleVersion: "11"
         UILaunchScreen: {}
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true

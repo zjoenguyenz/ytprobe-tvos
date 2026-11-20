@@ -58,7 +58,23 @@ có/không + độ dài).
    segment thật có về không. Chỉ fetch + kiểm kê — KHÔNG phát
    hình, màn hình chỉ có chữ là đúng. Kết luận nằm ở dòng "KẾT
    QUẢ probe13b" (SABR PHA 1B: …) cuối log.
-8. Các probe còn lại (2, 2b, 2c, 6, 5, E-P2, E-P6, C-3, 10, E-P4, 8)
+8. **Probe 14** — TVHTML5 downgraded + OAuth (bản 0.2.0): đường
+   được cả hai đội nghiên cứu chấm hạng 1. **THỨ TỰ QUAN TRỌNG:
+   chạy Probe 13 (bản 0.1.9) TRƯỚC và tải log 0.1.9 về gửi em
+   TRƯỚC KHI xoá app để cài 0.2.0** — xoá app là log cũ mất.
+   Cài 0.2.0 xong, mở Probe 14 là nó TỰ CHẠY: sandbox bị xoá
+   nên token mất, nó sẽ lại hiện MÃ KÍCH HOẠT — anh duyệt lại
+   một lần ở google.com/device bằng tài khoản Gold (như Probe
+   13, đây là chuyện đã biết trước, không phải lỗi). Duyệt xong
+   nó gọi /player cho tập Gold bằng client TVHTML5 bản 5.x
+   (persona tv_samsung — client yt-dlp dùng mặc định cho tài
+   khoản đã đăng nhập, không cần PO token): nếu client này trả
+   format thường thay vì ép SABR như bản 7.x, trình phát native
+   TỰ MỞ và phát thật — **cứ để nó phát hết ~2 phút rưỡi**
+   (probe lấy mẫu vị trí mỗi 15 giây để chắc chắn link không
+   chết giữa chừng kiểu ~30 giây), phát xong nó tự đóng và hiện
+   kết luận. Kết luận nằm ở dòng "KẾT QUẢ probe14" cuối log.
+9. Các probe còn lại (2, 2b, 2c, 6, 5, E-P2, E-P6, C-3, 10, E-P4, 8)
    chạy theo thời gian cho phép — mỗi probe đều tự kết luận trong log.
 
 Sau mỗi probe (hoặc cuối buổi): tải log ở màn hình chính YT Probe và
