@@ -483,7 +483,7 @@ enum ProbeJS {
           }
           var cands = document.querySelectorAll('a, button, [role="button"], div[role="link"], li');
           for (var j = 0; j < cands.length && out.length < 40; j++) {
-            var t = (cands[j].innerText || cands[j].textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+            var t = (cands[j].innerText || cands[j].textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 60);
             if (t && vis(cands[j])) {
               out.push(cands[j].tagName.toLowerCase() + ':' + t);
             }
