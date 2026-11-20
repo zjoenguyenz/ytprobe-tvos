@@ -40,7 +40,20 @@ có/không + độ dài).
    hiện lên thì để nó chạy ~10 giây rồi đóng. Cuối cùng app tự chạy
    cột đối chứng với tập Free. Kết luận nằm ở dòng "KẾT QUẢ
    probe12" cuối log.
-7. Các probe còn lại (2, 2b, 2c, 6, 5, E-P2, E-P6, C-3, 10, E-P4, 8)
+7. **Probe 13** — SABR pha 1 (fetcher tối thiểu): cửa native DUY
+   NHẤT còn lại cho Gold sau khi Probe 12 đóng cửa cookie. Mở probe
+   là nó TỰ CHẠY: nó tái dùng danh tính OAuth của Probe 9 — token
+   của Probe 9 đã mất theo các lần xoá app, nên nó sẽ tự chạy lại
+   cửa device-code NGAY TRONG PROBE: khi TV hiện MÃ KÍCH HOẠT (chữ
+   lớn trên nền vàng), anh mở https://www.google.com/device trên
+   iPhone → nhập mã → duyệt bằng tài khoản Gold của anh. Duyệt xong
+   probe tự chạy tiếp tới cùng, KHÔNG cần bấm gì thêm trên TV. Nó
+   lấy /player TVHTML5 cho tập Gold rồi POST thử giao thức SABR và
+   kiểm kê từng mảnh dữ liệu trả về: server có đòi attestation
+   không, có format AVC/AAC không, segment thật có về không. Chỉ
+   fetch + kiểm kê — KHÔNG phát hình, màn hình chỉ có chữ là đúng.
+   Kết luận nằm ở dòng "KẾT QUẢ probe13" (SABR PHA 1: …) cuối log.
+8. Các probe còn lại (2, 2b, 2c, 6, 5, E-P2, E-P6, C-3, 10, E-P4, 8)
    chạy theo thời gian cho phép — mỗi probe đều tự kết luận trong log.
 
 Sau mỗi probe (hoặc cuối buổi): tải log ở màn hình chính YT Probe và

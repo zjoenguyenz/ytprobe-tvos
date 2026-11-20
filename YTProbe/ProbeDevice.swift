@@ -697,3 +697,123 @@ struct BotGuardView: View {
         .onDisappear { model.stop() }
     }
 }
+
+// MARK: - Probe 9 token store (shared by Probe 9 + Probe 13)
+//
+// Probe 9 originally kept its OAuth material in four
+// UserDefaults keys, written inline by
+// `DeviceCodeProbeModel.finishScrape` / `pollToken`.
+// Probe 13 (SABR phase 1) needs the same tokens PLUS a
+// refresh path and an expiry stamp, so the accessors
+// live here now — additive only: Probe 9's own code is
+// untouched and reads/writes the same keys. UserDefaults
+// lives in the app sandbox, so a delete+reinstall wipes
+// everything below — which is why Probe 13 re-runs the
+// device-code flow in-line when no token is present.
+// Token VALUES are never logged anywhere — presence,
+// lengths and expiry only.
+
+struct Probe9RefreshOutcome {
+    var token: String?
+    var note: String
+}
+
+enum Probe9TokenStore {
+    static let accessTokenKey = "probe9.accessToken"
+    static let refreshTokenKey = "probe9.refreshToken"
+    static let clientIDKey = "probe9.clientID"
+    static let clientSecretKey = "probe9.clientSecret"
+    static let expiryKey = "probe9.accessTokenExpiry"
+
+    static var accessToken: String? {
+        UserDefaults.standard.string(forKey: accessTokenKey)
+    }
+
+    static var refreshToken: String? {
+        UserDefaults.standard.string(forKey: refreshTokenKey)
+    }
+
+    static var clientID: String? {
+        UserDefaults.standard.string(forKey: clientIDKey)
+    }
+
+    static var clientSecret: String? {
+        UserDefaults.standard.string(forKey: clientSecretKey)
+    }
+
+    /// Written by `saveTokens` (Probe 13's flows). Probe 9
+    /// never stamped an expiry, so tokens saved by Probe 9
+    /// read back as nil here — callers treat that as
+    /// "unknown expiry, let /player arbitrate (401 →
+    /// refresh / device-code)".
+    static var accessTokenExpiry: Date? {
+        let epoch = UserDefaults.standard.double(forKey: expiryKey)
+        return epoch > 0 ? Date(timeIntervalSince1970: epoch) : nil
+    }
+
+    static func saveClientCredentials(id: String, secret: String) {
+        UserDefaults.standard.set(id, forKey: clientIDKey)
+        UserDefaults.standard.set(secret, forKey: clientSecretKey)
+    }
+
+    static func saveTokens(access: String, refresh: String?, expiresIn: Int?) {
+        UserDefaults.standard.set(access, forKey: accessTokenKey)
+        if let refresh {
+            UserDefaults.standard.set(refresh, forKey: refreshTokenKey)
+        }
+        if let expiresIn {
+            UserDefaults.standard.set(
+                Date().addingTimeInterval(TimeInterval(expiresIn)).timeIntervalSince1970,
+                forKey: expiryKey)
+        }
+    }
+
+    /// Exchange the stored refresh token for a fresh
+    /// access token (Google OAuth `refresh_token` grant
+    /// against the same token endpoint Probe 9 polls).
+    /// The outcome carries a log-safe note (no values).
+    static func refresh() async -> Probe9RefreshOutcome {
+        guard let refreshToken, let clientID, let clientSecret else {
+            return Probe9RefreshOutcome(
+                token: nil,
+                note: "refresh: thiếu refresh token hoặc clientId/secret — không refresh được")
+        }
+        guard let url = URL(string: "https://oauth2.googleapis.com/token") else {
+            return Probe9RefreshOutcome(token: nil, note: "refresh: URL token endpoint không hợp lệ")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
+        request.setValue("application/x-www-form-urlencoded",
+                         forHTTPHeaderField: "Content-Type")
+        let fields = ["client_id": clientID,
+                      "client_secret": clientSecret,
+                      "refresh_token": refreshToken,
+                      "grant_type": "refresh_token"]
+        request.httpBody = Data(fields.map {
+            "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? $0.value)"
+        }.joined(separator: "&").utf8)
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let http = (response as? HTTPURLResponse)?.statusCode ?? -1
+            guard http == 200,
+                  let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let access = json["access_token"] as? String else {
+                return Probe9RefreshOutcome(
+                    token: nil,
+                    note: "refresh: token endpoint HTTP \(http) — refresh thất bại")
+            }
+            let newRefresh = json["refresh_token"] as? String
+            let expiresIn = (json["expires_in"] as? NSNumber)?.intValue
+            saveTokens(access: access, refresh: newRefresh, expiresIn: expiresIn)
+            let expiresNote = expiresIn.map { "\($0)" } ?? "?"
+            return Probe9RefreshOutcome(
+                token: access,
+                note: "refresh: OK — access token mới len \(access.count), expires_in \(expiresNote)s")
+        } catch {
+            return Probe9RefreshOutcome(
+                token: nil,
+                note: "refresh: lỗi mạng — \(error.localizedDescription)")
+        }
+    }
+}
