@@ -1,0 +1,49 @@
+name: YTProbe
+options:
+  bundleIdPrefix: com.luun.nguyen
+  deploymentTarget:
+    tvOS: "17.0"
+settings:
+  base:
+    # Swift 6 language mode, same as JoeTV (owner order
+    # 2026-11-18): strict concurrency is part of the mode.
+    # The probe is held to the same bar — strict-mode clean
+    # by construction, not by luck (owner order 2026-11-20).
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: ""
+targets:
+  YTProbe:
+    type: application
+    platform: tvOS
+    sources:
+      - YTProbe/YTProbeApp.swift
+      - YTProbe/ProbeDiagLog.swift
+      - YTProbe/ProbeWeb.swift
+      - YTProbe/ProbePages.swift
+      - YTProbe/ProbeExtract.swift
+      - YTProbe/ProbeDoor.swift
+      - YTProbe/ProbeDevice.swift
+      - YTProbe/JoeWebBridge.h
+      - YTProbe/JoeWebBridge.m
+      - YTProbe/YTProbe-Bridging-Header.h
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.luun.nguyen.ytprobe
+        INFOPLIST_FILE: InfoYTProbe.plist
+        SWIFT_OBJC_BRIDGING_HEADER: YTProbe/YTProbe-Bridging-Header.h
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+    info:
+      path: InfoYTProbe.plist
+      properties:
+        CFBundleDisplayName: "YT Probe"
+        CFBundleName: "YT Probe"
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        # The diagnostic-log export serves the log over the
+        # home LAN (tvOS has no share sheet) — same pattern
+        # as JoeTV's LOG RETRIEVAL LAW implementation.
+        NSLocalNetworkUsageDescription: "YT Probe mở một kênh trong mạng nhà để anh tải file log chẩn đoán từ Apple TV về iPhone."
