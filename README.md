@@ -108,7 +108,27 @@ có/không + độ dài).
    cuối log (EJS SIG/N: ĐẠT / SOLVER KHÔNG NẠP ĐƯỢC /
    SOLVER KHÔNG NHẬN DIỆN ĐƯỢC / SOLVER CHẠY LỖI /
    BYTE-CHECK BỊ TỪ CHỐI / GIẢI ĐƯỢC MÀ PHÁT CHẾT).
-11. Các probe còn lại (2, 2b, 2c, 6, 5, E-P2, E-P6, C-3, 10, E-P4, 8)
+11. **Probe 17** — đường chung: Free + Super VIP (bản 0.2.3):
+   Probe 16 đã chứng minh đường Gold (device-code + client
+   TVHTML5 5.x + solver EJS). Anh chốt: MỘT đường duy nhất
+   cho mọi tầng, bỏ trục Free riêng. Probe này kiểm hai ô
+   chưa từng thử qua đường đó: tập Free (Bằng Chứng Thép II
+   tập 1) và tập Super VIP (Cuộc Chiến Hoa Hồng tập 1).
+   **THỨ TỰ QUAN TRỌNG: tải log bản 0.2.2 về gửi em TRƯỚC
+   KHI xoá app để cài 0.2.3** — xoá app là log cũ mất.
+   Cài 0.2.3 xong, mở Probe 17 là nó TỰ CHẠY: sandbox bị
+   xoá nên lại hiện MÃ KÍCH HOẠT — anh duyệt MỘT lần ở
+   google.com/device bằng tài khoản của anh (một lần duyệt
+   chạy cho cả hai cell). Duyệt xong nó tự chạy cell A
+   (Free) rồi cell B (Super VIP): mỗi cell giải mã, kiểm
+   byte thật, rồi phát thử bản muxed — **cứ để nó phát hết
+   ~1 phút mỗi cell**. Nếu tài khoản chưa lên Super VIP
+   kịp thì cell B kết "CHƯA MỞ" kèm lý do nguyên văn của
+   YouTube — đó là kết quả đọc được, không phải lỗi; khi
+   nào anh lên hạng xong, chạy lại Probe 17 là cell B đi
+   tiếp. Kết luận nằm ở dòng "KẾT QUẢ probe17" cuối log
+   (FREE=… · SVIP=…).
+12. Các probe còn lại (2, 2b, 2c, 6, 5, E-P2, E-P6, C-3, 10, E-P4, 8)
    chạy theo thời gian cho phép — mỗi probe đều tự kết luận trong log.
 
 Sau mỗi probe (hoặc cuối buổi): tải log ở màn hình chính YT Probe và
