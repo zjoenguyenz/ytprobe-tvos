@@ -43,15 +43,15 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.luun.nguyen.ytprobe
         INFOPLIST_FILE: InfoYTProbe.plist
         SWIFT_OBJC_BRIDGING_HEADER: YTProbe/YTProbe-Bridging-Header.h
-        MARKETING_VERSION: "0.2.6"
-        CURRENT_PROJECT_VERSION: "17"
+        MARKETING_VERSION: "0.2.7"
+        CURRENT_PROJECT_VERSION: "18"
     info:
       path: InfoYTProbe.plist
       properties:
         CFBundleDisplayName: "YT Probe"
         CFBundleName: "YT Probe"
-        CFBundleShortVersionString: "0.2.6"
-        CFBundleVersion: "17"
+        CFBundleShortVersionString: "0.2.7"
+        CFBundleVersion: "18"
         UILaunchScreen: {}
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
