@@ -28,6 +28,7 @@ targets:
       - YTProbe/ProbeSigN.swift
       - YTProbe/ProbeEjs.swift
       - YTProbe/ProbeUnified.swift
+      - YTProbe/ProbeVisionAuth.swift
       - path: YTProbe/yt.solver.lib.min.js
         buildPhase: resources
       - path: YTProbe/yt.solver.core.min.js
@@ -40,15 +41,15 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.luun.nguyen.ytprobe
         INFOPLIST_FILE: InfoYTProbe.plist
         SWIFT_OBJC_BRIDGING_HEADER: YTProbe/YTProbe-Bridging-Header.h
-        MARKETING_VERSION: "0.2.3"
-        CURRENT_PROJECT_VERSION: "14"
+        MARKETING_VERSION: "0.2.4"
+        CURRENT_PROJECT_VERSION: "15"
     info:
       path: InfoYTProbe.plist
       properties:
         CFBundleDisplayName: "YT Probe"
         CFBundleName: "YT Probe"
-        CFBundleShortVersionString: "0.2.3"
-        CFBundleVersion: "14"
+        CFBundleShortVersionString: "0.2.4"
+        CFBundleVersion: "15"
         UILaunchScreen: {}
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true

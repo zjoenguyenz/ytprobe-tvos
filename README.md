@@ -128,7 +128,24 @@ có/không + độ dài).
    nào anh lên hạng xong, chạy lại Probe 17 là cell B đi
    tiếp. Kết luận nằm ở dòng "KẾT QUẢ probe17" cuối log
    (FREE=… · SVIP=…).
-12. Các probe còn lại (2, 2b, 2c, 6, 5, E-P2, E-P6, C-3, 10, E-P4, 8)
+12. **Probe 18** — VISIONOS + OAuth: nâng trần 480p? (bản 0.2.4):
+   đường hiện tại (tv_samsung + OAuth) bị trần format THEO TỰA —
+   có bộ chỉ được cấp tới 480p dù video có 1080p (FL-351). Probe
+   này đo ô chưa ai thử: client VISIONOS mang danh tính OAuth
+   của anh, trên đúng tựa bị cap (Nhân Chứng tập 1) + tựa đối
+   chứng của Probe 16. **THỨ TỰ QUAN TRỌNG: tải log bản 0.2.3
+   về gửi em TRƯỚC KHI xoá app để cài 0.2.4** — xoá app là log
+   cũ mất. Cài 0.2.4 xong, mở Probe 18 là nó TỰ CHẠY: lại hiện
+   MÃ KÍCH HOẠT — anh duyệt MỘT lần ở google.com/device bằng
+   tài khoản của anh (một lần duyệt chạy cho mọi ô OAuth).
+   Duyệt xong nó tự chạy 5 ô theo thứ tự: P18-1 baseline
+   tv_samsung → P18-2 VISIONOS + đăng nhập → P18-3 VISIONOS
+   ẩn danh → P18-4/P18-5 đối chứng. Ô nào trả HLS thì trình
+   phát TỰ MỞ thử khung hình đầu — cứ để nó chạy vài giây, nó
+   tự đóng, không cần bấm gì. Để yên tới khi dòng "KẾT QUẢ
+   probe18" hiện ra (kèm nhánh kiến trúc A/B/C/D theo cây
+   quyết định) rồi tải log ở màn hình chính gửi em.
+13. Các probe còn lại (2, 2b, 2c, 6, 5, E-P2, E-P6, C-3, 10, E-P4, 8)
    chạy theo thời gian cho phép — mỗi probe đều tự kết luận trong log.
 
 Sau mỗi probe (hoặc cuối buổi): tải log ở màn hình chính YT Probe và
