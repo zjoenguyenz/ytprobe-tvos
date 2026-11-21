@@ -55,7 +55,7 @@ import JavaScriptCore
 //           request-shaping evidence in the survey.)
 //
 // Every cell runs on BOTH targets: the capped title
-// (Nhân Chứng ep 1 · 4rdOxL9mqVk — tv_samsung census
+// (Mất Dấu 2 tập 1 · L1JzJVZA6WU — tv_samsung census
 // tops at itag 135/480p) and the control (Probe 16's
 // Gold ep · f-ZSFRsMW_4 — tv_samsung gives 137/1080p).
 //
@@ -93,7 +93,7 @@ final class ClientRaceProbeModel: ObservableObject {
     private var seenPlayerHash: String?
 
     // The two targets (unchanged from Probe 18).
-    private static let cappedVid = "4rdOxL9mqVk"   // Nhân Chứng ep 1 — census capped at 135
+    private static let cappedVid = "L1JzJVZA6WU"   // Mất Dấu 2 tập 1 — census capped at 135
     private static let controlVid = "f-ZSFRsMW_4"  // Probe 16's Gold ep — tv_samsung gave 137
 
     func start() {
@@ -1411,7 +1411,7 @@ final class ClientRaceProbeModel: ObservableObject {
         cellPrefix = ""
 
         log("=== PROBE 19 — CUỘC ĐUA CLIENT: AI PHÁ ĐƯỢC TRẦN 480p? (FL-351 vòng 2, nghiên cứu Team A/B 2026-11-21) ===")
-        log("Tựa bị cap: Nhân Chứng tập 1 · videoId \(Self.cappedVid) (census qua tv_samsung chỉ tới itag 135/480p)")
+        log("Tựa bị cap: Mất Dấu 2 tập 1 · videoId \(Self.cappedVid) (census qua tv_samsung chỉ tới itag 135/480p)")
         log("Tựa đối chứng: tập Gold của Probe 16 · videoId \(Self.controlVid) (tv_samsung cấp 137/1080p)")
         log("Mọi ô dùng CHUNG một danh tính device-code OAuth (như Probe 18) — anh duyệt đúng một lần")
         log("solver: yt-dlp-ejs 0.8.0 vendored — chỉ chạy khi format bị cipher hoặc mang tham số n")
@@ -1570,7 +1570,7 @@ struct ClientRaceProbeView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Probe 19 — Cuộc đua client: ai phá được trần 480p?")
                 .font(.title3).bold()
-            Text("Năm ô (mọi ô mang CÙNG danh tính đăng nhập của anh, duyệt mã kích hoạt đúng MỘT lần) chạy trên hai tựa: tựa BỊ CAP Nhân Chứng tập 1 và tựa ĐỐI CHỨNG của Probe 16 (được cấp 1080p). Thứ tự: P19-1 baseline tv_samsung → P19-2 web_embedded ★ (ứng viên số 1 của đợt nghiên cứu — từng lấy trọn 1080p cho phim hội viên trong một báo cáo đo thật) → P19-3 tv-downgraded trần (bỏ vỏ Samsung) → P19-4 bản TV cổ 2015 → P19-5 ba biến thể thông số của đường hiện tại. Ô nào trả HLS thì trình phát TỰ MỞ thử khung hình đầu — để nó chạy vài giây, nó tự đóng. Kết luận nằm ở dòng \"KẾT QUẢ probe19\" + \"KẾT LUẬN TRẦN 480p\" cuối log.")
+            Text("Năm ô (mọi ô mang CÙNG danh tính đăng nhập của anh, duyệt mã kích hoạt đúng MỘT lần) chạy trên hai tựa: tựa BỊ CAP Mất Dấu 2 tập 1 và tựa ĐỐI CHỨNG của Probe 16 (được cấp 1080p). Thứ tự: P19-1 baseline tv_samsung → P19-2 web_embedded ★ (ứng viên số 1 của đợt nghiên cứu — từng lấy trọn 1080p cho phim hội viên trong một báo cáo đo thật) → P19-3 tv-downgraded trần (bỏ vỏ Samsung) → P19-4 bản TV cổ 2015 → P19-5 ba biến thể thông số của đường hiện tại. Ô nào trả HLS thì trình phát TỰ MỞ thử khung hình đầu — để nó chạy vài giây, nó tự đóng. Kết luận nằm ở dòng \"KẾT QUẢ probe19\" + \"KẾT LUẬN TRẦN 480p\" cuối log.")
                 .font(.footnote).foregroundStyle(.secondary)
             if let code = model.userCode {
                 VStack(spacing: 8) {

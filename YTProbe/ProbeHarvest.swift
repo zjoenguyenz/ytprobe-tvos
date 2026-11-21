@@ -71,7 +71,16 @@ final class HarvestProbeModel: ObservableObject {
     @Published var lines: [String] = []
     @Published var verdict = ""
     @Published var running = false
-    @Published var needsDoor = false
+    /// Starts TRUE (0.2.7, FL-363): until start()'s check
+    /// PROVES a door session exists, the truthful state is
+    /// "door needed" — the sign-in panel (and its default
+    /// focus) is in the hierarchy from the first frame,
+    /// and the view keeps both WebView surfaces unmounted
+    /// until a session exists. The 0.2.6 false start let
+    /// the two blank surfaces take focus invisibly while
+    /// the sign-in button was inserted too late for the
+    /// focus engine to ever promote it.
+    @Published var needsDoor = true
 
     /// The page surface P20-1/P20-3 run in — the view
     /// hosts it (a WKWebView only executes in the
@@ -87,7 +96,7 @@ final class HarvestProbeModel: ObservableObject {
     private var seenPlayerHash: String?
 
     // The two targets (unchanged since Probe 18).
-    private static let cappedVid = "4rdOxL9mqVk"   // Nhân Chứng ep 1 — census capped at 135
+    private static let cappedVid = "L1JzJVZA6WU"   // Mất Dấu 2 tập 1 — census capped at 135
     private static let controlVid = "f-ZSFRsMW_4"  // Probe 16's Gold ep — tv_samsung gave 137
     private static let safariUA = ProbeJS.safariUA
 
@@ -100,6 +109,7 @@ final class HarvestProbeModel: ObservableObject {
         started = true
         Task {
             if await sessionReady() {
+                needsDoor = false
                 await run()
             } else {
                 needsDoor = true
@@ -1971,7 +1981,7 @@ final class HarvestProbeModel: ObservableObject {
         cellPrefix = ""
 
         log("=== PROBE 20 — GẶT NGUỒN: ĐỌC streamingData SAU CỬA ĐĂNG NHẬP (FL-351 vòng 3, panel Team D) ===")
-        log("Tựa bị cap: Nhân Chứng tập 1 · videoId \(Self.cappedVid) (mọi đường InnerTube chỉ tới itag 135/480p)")
+        log("Tựa bị cap: Mất Dấu 2 tập 1 · videoId \(Self.cappedVid) (mọi đường InnerTube chỉ tới itag 135/480p)")
         log("Tựa đối chứng: tập Gold của Probe 16 · videoId \(Self.controlVid) (đường TV cấp 137/1080p)")
         log("Một lần đăng nhập cửa (Probe 4) nuôi cả bốn ô: P20-1 Gặt · P20-2 web_embedded bằng cookie cửa · P20-3 fetch trong trang · P20-5 kiểm PO token (chỉ hiện diện)")
         log("solver: yt-dlp-ejs 0.8.0 vendored — chỉ chạy khi format bị cipher hoặc mang tham số n")
@@ -2075,6 +2085,15 @@ struct HarvestProbeView: View {
     @StateObject private var model = HarvestProbeModel()
     @State private var doorPresented = false
 
+    /// FL-363 (0.2.7): the screen's explicit focus
+    /// contract. tvOS never promotes focus to a control
+    /// that appears late, and the WebView surfaces below
+    /// can hold focus invisibly while blank — so focus
+    /// is DRIVEN: the sign-in button owns it whenever
+    /// the door is needed, the rerun button otherwise.
+    private enum FocusTarget: Hashable { case signIn, rerun }
+    @FocusState private var focus: FocusTarget?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Probe 20 — Gặt nguồn: đọc streamingData sau cửa đăng nhập")
@@ -2090,6 +2109,7 @@ struct HarvestProbeView: View {
                         .multilineTextAlignment(.center)
                     Button("Mở cửa đăng nhập (Probe 4)") { doorPresented = true }
                         .font(.system(size: 26, weight: .semibold))
+                        .focused($focus, equals: .signIn)
                 }
                 .frame(maxWidth: .infinity)
                 .padding()
@@ -2101,20 +2121,32 @@ struct HarvestProbeView: View {
                     .font(.headline)
                     .foregroundStyle(model.verdict.contains("CÓ Ô THẮNG") ? Color.green : Color.red)
             }
-            Text("Bề mặt trang cho P20-1/P20-3 (trang watch bản máy tính trong phiên cửa):")
-                .font(.footnote).foregroundStyle(.secondary)
-            ProbeWebView(controller: model.pageController,
-                         navigationMode: .doorRoam,
-                         playbackPresses: false)
-                .frame(height: 170)
-                .background(Color.black)
-            Text("Bề mặt WebView cho P20-5 (mint BotGuard recipe TV):")
-                .font(.footnote).foregroundStyle(.secondary)
-            ProbeWebView(controller: model.mintController,
-                         navigationMode: .doorRoam,
-                         playbackPresses: false)
-                .frame(height: 120)
-                .background(Color.black)
+            // FL-363 (0.2.7): both surfaces mount ONLY once
+            // a door session exists — the cells that use
+            // them (P20-1/P20-3/P20-5) run exclusively
+            // inside run(), which both entry points enter
+            // only after needsDoor flips false, and run()
+            // itself awaits the session check before its
+            // first load/evaluate, so the hosts exist long
+            // before any call can reach them. Mounted
+            // earlier, the blank surfaces were the screen's
+            // invisible focus sink.
+            if !model.needsDoor {
+                Text("Bề mặt trang cho P20-1/P20-3 (trang watch bản máy tính trong phiên cửa):")
+                    .font(.footnote).foregroundStyle(.secondary)
+                ProbeWebView(controller: model.pageController,
+                             navigationMode: .doorRoam,
+                             playbackPresses: false)
+                    .frame(height: 170)
+                    .background(Color.black)
+                Text("Bề mặt WebView cho P20-5 (mint BotGuard recipe TV):")
+                    .font(.footnote).foregroundStyle(.secondary)
+                ProbeWebView(controller: model.mintController,
+                             navigationMode: .doorRoam,
+                             playbackPresses: false)
+                    .frame(height: 120)
+                    .background(Color.black)
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(Array(model.lines.enumerated()), id: \.offset) { _, line in
@@ -2128,9 +2160,14 @@ struct HarvestProbeView: View {
                 model.rerun()
             }
             .disabled(model.running)
+            .focused($focus, equals: .rerun)
         }
         .padding(28)
         .onExitCommand { onExit() }
+        .onAppear { focus = model.needsDoor ? .signIn : .rerun }
+        .onChange(of: model.needsDoor) { _, needed in
+            focus = needed ? .signIn : .rerun
+        }
         .task { model.start() }
         .fullScreenCover(isPresented: $doorPresented, onDismiss: { model.doorDismissed() }) {
             ProbeDoorView(onExit: { doorPresented = false })

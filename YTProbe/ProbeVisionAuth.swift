@@ -26,10 +26,10 @@ import JavaScriptCore
 // unmeasured cell this probe exists to measure.
 //
 // FIVE CELLS (design table, run in order):
-//   P18-1 · tv_samsung + OAuth bearer · 4rdOxL9mqVk
+//   P18-1 · tv_samsung + OAuth bearer · L1JzJVZA6WU
 //           (baseline — must reproduce the capped census)
-//   P18-2 · VISIONOS  + OAuth bearer · 4rdOxL9mqVk
-//   P18-3 · VISIONOS  + anonymous    · 4rdOxL9mqVk
+//   P18-2 · VISIONOS  + OAuth bearer · L1JzJVZA6WU
+//   P18-3 · VISIONOS  + anonymous    · L1JzJVZA6WU
 //   P18-4 · VISIONOS  + OAuth bearer · f-ZSFRsMW_4
 //           (control: Probe 16's Gold title, tv_samsung
 //           gave it 137 — is VISIONOS at least as rich?)
@@ -82,7 +82,7 @@ final class VisionAuthProbeModel: ObservableObject {
     private var seenPlayerHash: String?
 
     // The two targets (design §6.2).
-    private static let cappedVid = "4rdOxL9mqVk"   // Nhân Chứng ep 1 — census capped at 135
+    private static let cappedVid = "L1JzJVZA6WU"   // Mất Dấu 2 tập 1 — census capped at 135
     private static let controlVid = "f-ZSFRsMW_4"  // Probe 16's Gold ep — tv_samsung gave 137
 
     func start() {
@@ -1332,7 +1332,7 @@ final class VisionAuthProbeModel: ObservableObject {
         cellPrefix = ""
 
         log("=== PROBE 18 — VISIONOS + OAuth CÓ NÂNG ĐƯỢC TRẦN 480p KHÔNG? (FL-351, thiết kế §6.2) ===")
-        log("Tựa bị cap: Nhân Chứng tập 1 · videoId \(Self.cappedVid) (census qua tv_samsung chỉ tới itag 135/480p)")
+        log("Tựa bị cap: Mất Dấu 2 tập 1 · videoId \(Self.cappedVid) (census qua tv_samsung chỉ tới itag 135/480p)")
         log("Tựa đối chứng: tập Gold của Probe 16 · videoId \(Self.controlVid) (tv_samsung cấp 137/1080p)")
         log("solver: yt-dlp-ejs 0.8.0 vendored — chỉ chạy khi format bị cipher hoặc mang tham số n")
         guard let vision = visionSpec() else {
@@ -1485,7 +1485,7 @@ struct VisionAuthProbeView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Probe 18 — VISIONOS + OAuth: nâng trần 480p?")
                 .font(.title3).bold()
-            Text("Năm ô đo trên hai tựa: tựa BỊ CAP Nhân Chứng tập 1 (client hiện tại chỉ cấp tới 480p) và tựa ĐỐI CHỨNG của Probe 16 (được cấp 1080p). Mở probe là nó TỰ CHẠY: nếu cần, hiện MÃ KÍCH HOẠT một lần (duyệt ở google.com/device bằng tài khoản của anh — một lần duyệt cho mọi ô OAuth), xong nó tự chạy lần lượt P18-1 (baseline tv_samsung) → P18-2 (VISIONOS + đăng nhập) → P18-3 (VISIONOS ẩn danh) → P18-4/P18-5 (đối chứng). Ô nào có HLS thì trình phát TỰ MỞ thử khung hình đầu — để nó chạy vài giây, nó tự đóng. Kết luận nằm ở dòng \"KẾT QUẢ probe18\" cuối log, kèm nhánh kiến trúc A/B/C/D.")
+            Text("Năm ô đo trên hai tựa: tựa BỊ CAP Mất Dấu 2 tập 1 (client hiện tại chỉ cấp tới 480p) và tựa ĐỐI CHỨNG của Probe 16 (được cấp 1080p). Mở probe là nó TỰ CHẠY: nếu cần, hiện MÃ KÍCH HOẠT một lần (duyệt ở google.com/device bằng tài khoản của anh — một lần duyệt cho mọi ô OAuth), xong nó tự chạy lần lượt P18-1 (baseline tv_samsung) → P18-2 (VISIONOS + đăng nhập) → P18-3 (VISIONOS ẩn danh) → P18-4/P18-5 (đối chứng). Ô nào có HLS thì trình phát TỰ MỞ thử khung hình đầu — để nó chạy vài giây, nó tự đóng. Kết luận nằm ở dòng \"KẾT QUẢ probe18\" cuối log, kèm nhánh kiến trúc A/B/C/D.")
                 .font(.footnote).foregroundStyle(.secondary)
             if let code = model.userCode {
                 VStack(spacing: 8) {
