@@ -611,56 +611,16 @@ enum ProbeJS {
         })()
         """
 
-    /// PROBE: JS-click the page's "Try another way" control
-    /// (JoeTV fix item D-3; the door research's option A —
-    /// the same evaluate+click mechanism that advanced the
-    /// email step on the owner's TV). Returns 'clicked' or
-    /// 'notfound'; fail-soft by construction.
-    static let clickTryAnotherWay = """
-        (function(){
-          function vis(el) {
-            if (!el) { return false; }
-            var r = el.getBoundingClientRect();
-            return r.width > 0 && r.height > 0;
-          }
-          var cands = document.querySelectorAll('a, button, [role="button"], div[role="link"]');
-          for (var i = 0; i < cands.length; i++) {
-            var t = (cands[i].innerText || cands[i].textContent || '').trim().toLowerCase();
-            if ((t === 'try another way' || t === 'thử cách khác') && vis(cands[i])) {
-              cands[i].click();
-              return 'clicked';
-            }
-          }
-          return 'notfound';
-        })()
-        """
-
-    /// PROBE: after "Try another way", Google lists sign-in
-    /// methods; click the password one so the door lands
-    /// back on the password step. Text-matched, fail-soft.
-    static let clickPasswordMethod = """
-        (function(){
-          function vis(el) {
-            if (!el) { return false; }
-            var r = el.getBoundingClientRect();
-            return r.width > 0 && r.height > 0;
-          }
-          var wanted = ['use your password', 'enter your password',
-                        'dùng mật khẩu', 'sử dụng mật khẩu', 'nhập mật khẩu'];
-          var cands = document.querySelectorAll('a, button, [role="button"], div[role="link"], li, div');
-          for (var i = 0; i < cands.length; i++) {
-            var t = (cands[i].innerText || cands[i].textContent || '').trim().toLowerCase();
-            if (t.length > 60) { continue; }
-            for (var j = 0; j < wanted.length; j++) {
-              if (t === wanted[j] && vis(cands[i])) {
-                cands[i].click();
-                return 'clicked';
-              }
-            }
-          }
-          return 'notfound';
-        })()
-        """
+    // 0.2.8 (FL-365): the clickTryAnotherWay and
+    // clickPasswordMethod payloads are REMOVED. The door
+    // never JS-clicks "Try another way" and never clicks a
+    // sign-in method on a timer again — those auto-clicks
+    // burned Google's failed-attempt budget in 0.2.7 and
+    // tripped a temporary account lock. At the challenge
+    // step the owner taps the page's own controls; the
+    // door's only remaining clicks are the owner's own
+    // native-button actions (email/password/code fill and
+    // a fresh-confirmed chooser row — see ProbeDoor.swift).
 
     /// PROBE (Audit 2 §3.2 / Team 2 §5 item 3): the
     /// challenge page's candidate-control inventory —

@@ -11,6 +11,7 @@ import SwiftUI
 //   transition logged
 // - the "Dùng mật khẩu thay thế" JS-click button (D-3 /
 //   Option A) + the follow-up password-method click
+//   (BOTH REMOVED in 0.2.8 — FL-365, see the last bullet)
 // - the challenge page's candidate-control DOM inventory
 //   (values-free) captured into the log the moment the
 //   challenge step appears (Audit requirement)
@@ -40,6 +41,25 @@ import SwiftUI
 //   the text match to the element Google's handler
 //   listens on and fires a full press sequence, with one
 //   retry on the row's first interactive descendant
+//   (the retry leg was REMOVED in 0.2.8 — FL-365)
+// - 0.2.8 (FL-365): ALL auto-drive at the verification /
+//   challenge step is DISABLED. The 0.2.7 door burned
+//   Google's failed-attempt budget and tripped a
+//   temporary account lock (diag_16): 'Try another way'
+//   was JS-clicked three times in one session, the Tap
+//   Yes click retried itself blind after 3 s, and the
+//   password-method loop clicked on a timer. From 0.2.8:
+//   no auto-click of 'Try another way' (the native button
+//   is gone — the owner taps the control in the page
+//   itself), no password-method retry loop, no chooser
+//   retry leg, and a chooser-row click fires ONLY after
+//   a FRESH inventory scan confirms that row is on the
+//   page right now — otherwise nothing is clicked and
+//   the stale button removes itself. An unrecognised
+//   page STOPS the automation: control stays with the
+//   owner and the WebView stays visible and tappable.
+//   Automatic sign-in attempts in this door = 0; every
+//   attempt is the owner's own tap.
 
 /// One detected row of Google's 2-Step Verification
 /// chooser. `needles` are tried in order for the JS click;
@@ -66,9 +86,6 @@ final class ProbeDoorModel: ObservableObject {
     private var started = false
     private var lastStep = ""
     private var challengeInventoried = false
-    private var chooserInventoried = false
-    private var passwordMethodArmed = false
-    private var passwordMethodTries = 0
     private var chooserWatchTask: Task<Void, Never>?
     private var lastChooserStep = ""
     var masking: Bool = true
@@ -83,7 +100,8 @@ final class ProbeDoorModel: ObservableObject {
         guard !started else { return }
         started = true
         log("START Probe 4 — cửa đăng nhập (masking=\(masking ? "ON" : "off"), "
-            + "cơ chế lái CHÍNH = JS-click; focus chỉ quan sát)")
+            + "0.2.8: KHÔNG tự lái ở bước xác minh (FL-365) — mỗi lượt thử là "
+            + "một cú bấm của anh; focus chỉ quan sát)")
         controller.onFinishLoad = { [weak self] in
             guard let self else { return }
             self.log("door: load finished — đọc phiên tại +0ms/+700ms/+2s (E-P3)")
@@ -126,14 +144,11 @@ final class ProbeDoorModel: ObservableObject {
                     self.onChallenge()
                 }
             }
-            if self.passwordMethodArmed, !self.chooserInventoried,
-               result != "password", self.passwordMethodTries < 6 {
-                self.passwordMethodTries += 1
-                self.controller.evaluateForResult(ProbeJS.clickPasswordMethod) { [weak self] r in
-                    self?.log("door: click phương thức mật khẩu (lần \(self?.passwordMethodTries ?? 0)): \(r ?? "nil")")
-                    if r == "clicked" { self?.passwordMethodArmed = false }
-                }
-            }
+            // 0.2.8 (FL-365): the password-method retry
+            // loop that used to run here — auto-clicking
+            // the password method on this 2 s tick, up to
+            // 6 tries — is REMOVED. The tick now only
+            // observes the step; it never clicks anything.
         }
     }
 
@@ -153,17 +168,15 @@ final class ProbeDoorModel: ObservableObject {
         scanChooser(afterSeconds: 1.5, allowRetry: false)
     }
 
-    func clickTryAnotherWay() {
-        log("door: bấm nút 'Dùng mật khẩu thay thế' → JS-click 'Try another way'")
-        controller.evaluateForResult(ProbeJS.clickTryAnotherWay) { [weak self] result in
-            self?.log("door: click Try another way → \(result ?? "nil")")
-            if result == "clicked" {
-                self?.passwordMethodArmed = true
-                self?.passwordMethodTries = 0
-                self?.scanChooser(afterSeconds: 2.0, allowRetry: true)
-            }
-        }
-    }
+    // 0.2.8 (FL-365): clickTryAnotherWay() is REMOVED —
+    // the door never JS-clicks 'Try another way'. In
+    // 0.2.7 that click fired three times in one session
+    // and each one counted as a fresh attempt in Google's
+    // eyes. The owner taps 'Try another way' in the page
+    // itself (the WebView below stays visible and
+    // tappable); the chooser scan still runs at the
+    // challenge step so the rows the page offers become
+    // native buttons.
 
     /// After 'Try another way', Google's 2-Step Verification
     /// chooser lists the methods THIS account actually has
@@ -194,10 +207,6 @@ final class ProbeDoorModel: ObservableObject {
             log("door: chooser inventory: không đọc được — giữ nguyên các nút đã có")
             return []
         }
-        // A captured inventory ends the legacy password-
-        // method branch: its retry loop is silenced from
-        // here on (0.1.4, log-noise fix).
-        chooserInventoried = true
         log("door: chooser inventory (\(texts.count) hàng bấm được): "
             + texts.joined(separator: " | "))
         let lowered = texts.map { $0.lowercased() }
@@ -231,7 +240,9 @@ final class ProbeDoorModel: ObservableObject {
                                    avoid: "authenticator"))
         }
         log(rows.isEmpty
-            ? "door: KHÔNG nhận diện được hàng 2SV nào trong inventory này"
+            ? "door: KHÔNG nhận diện được hàng 2SV nào trong inventory này "
+                + "— DỪNG tự lái ở bước xác minh (0.2.8/FL-365): app không "
+                + "bấm gì thêm; anh thao tác trực tiếp trong trang WebView"
             : "door: inventory này nhận diện \(rows.count) hàng 2SV: "
                 + rows.map(\.label).joined(separator: ", "))
         // UNION merge: rows found by ANY scan (challenge
@@ -252,14 +263,30 @@ final class ProbeDoorModel: ObservableObject {
     /// (transitions only) for up to ~120 s. The 0.1.4 click
     /// v2 walks up from the text match to the element
     /// Google's handler listens on and fires a full press
-    /// sequence; if the step has not moved ~3 s later, ONE
-    /// retry click lands on the row's first interactive
-    /// descendant.
+    /// sequence.
+    ///
+    /// 0.2.8 (FL-365): the click fires ONLY when a FRESH
+    /// inventory scan — taken at this moment, not the
+    /// union of older scans — confirms the row is on the
+    /// page right now. A row the fresh scan no longer
+    /// sees is NOT clicked (in 0.2.7 such stale buttons
+    /// kept firing at rows that had left the screen), and
+    /// its button removes itself. The click also no
+    /// longer schedules any retry: one owner tap = at
+    /// most one click, ever.
     func clickChooser(_ row: ChooserRow) {
         codeInputPresent = false
         Task { [weak self] in
             guard let self else { return }
-            let stepBefore = await self.evaluateAwait(ProbeJS.chooserStep) ?? "unreadable"
+            let freshJSON = await self.evaluateAwait(ProbeJS.chooserRows)
+            let freshRows = self.detectChooserRows(fromJSON: freshJSON)
+            guard freshRows.contains(where: { $0.kind == row.kind }) else {
+                self.log("door: hàng 2SV '\(row.label)' KHÔNG còn trên trang "
+                    + "(quét tươi ngay lúc bấm không thấy) — KHÔNG bấm; nút tự "
+                    + "gỡ. Anh thao tác trực tiếp trong trang WebView")
+                self.chooserRows.removeAll { $0.kind == row.kind }
+                return
+            }
             var outcome = "notfound"
             var clicked = false
             for needle in row.needles {
@@ -276,7 +303,6 @@ final class ProbeDoorModel: ObservableObject {
             self.log("door: click hàng 2SV '\(row.label)' → \(outcome)")
             if clicked {
                 self.startChooserWatch()
-                self.scheduleChooserRetry(row: row, stepBefore: stepBefore)
             }
         }
     }
@@ -299,37 +325,13 @@ final class ProbeDoorModel: ObservableObject {
         return (outcome, "\(tag) role=\(role) jsaction=\(js) qual=\(qual)")
     }
 
-    /// 0.1.4 retry leg: if the page step is unchanged ~3 s
-    /// after the row click, click ONCE more — on the row's
-    /// first descendant (document order) that is an A, a
-    /// BUTTON, or carries role link/button. Skipped when
-    /// the step moved, the sign-in completed, or the row
-    /// has no such descendant.
-    private func scheduleChooserRetry(row: ChooserRow, stepBefore: String) {
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            guard let self else { return }
-            let stepNow = await self.evaluateAwait(ProbeJS.chooserStep) ?? "unreadable"
-            guard stepNow == stepBefore, stepNow != "signed-in" else { return }
-            for needle in row.needles {
-                let r = await self.evaluateAwait(
-                    ProbeJS.clickChooserRowRetry(needle: needle, avoid: row.avoid))
-                guard let r else { continue }
-                let info = Self.parseClickReport(r)
-                if info.outcome == "clicked" {
-                    self.log("door: click hàng 2SV '\(row.label)' → retry clicked "
-                        + "(target=\(info.target)) — bước chưa đổi sau 3s")
-                    return
-                }
-                if info.outcome == "nodesc" {
-                    self.log("door: retry hàng 2SV '\(row.label)': hàng không có "
-                        + "phần tử con tương tác — bỏ qua")
-                    return
-                }
-            }
-            self.log("door: retry hàng 2SV '\(row.label)': không tìm lại được hàng — bỏ qua")
-        }
-    }
+    // 0.2.8 (FL-365): scheduleChooserRetry is REMOVED.
+    // In 0.2.7 it re-clicked the Tap Yes row ~3 s after
+    // the owner's tap when the step had not moved — a
+    // second attempt Google counted against the account
+    // while its prompt never reached the phone. A click
+    // in this door is never retried by the app; if a tap
+    // did not take, the owner decides what happens next.
 
     private func startChooserWatch() {
         chooserWatchTask?.cancel()
@@ -483,12 +485,9 @@ struct ProbeDoorView: View {
                 }
                 .font(.system(size: 22))
                 HStack(spacing: 14) {
-                    Button("Dùng mật khẩu thay thế") { model.clickTryAnotherWay() }
-                        .font(.system(size: 24, weight: .bold))
-                        .disabled(model.fieldKind != "challenge")
                     Text(model.fieldKind == "challenge"
-                        ? "Trang đang ở bước thử thách — bấm nút này để app JS-click 'Try another way'; các cách xác minh trang thật sự có sẽ hiện thành nút ngay bên dưới."
-                        : "Nút này sáng khi trang tới bước thử thách.")
+                        ? "Trang đang ở bước thử thách — bản 0.2.8 KHÔNG tự bấm gì ở bước này (FL-365): 'Try another way' anh tự bấm trong trang; các cách xác minh trang thật sự có sẽ hiện thành nút bên dưới, và mỗi nút chỉ bấm khi hàng còn hiện trên trang."
+                        : "Tới bước thử thách, app không tự lái (0.2.8/FL-365) — anh thao tác trực tiếp trong trang.")
                         .font(.system(size: 21))
                         .foregroundStyle(.secondary)
                     Button("Thử focus vào trang (quan sát)") { model.focusPage() }
@@ -702,63 +701,9 @@ extension ProbeJS {
         """
     }
 
-    /// Retry leg for click v2: re-locate the row (same
-    /// matching as clickChooserRow), then fire the same
-    /// full press sequence on the row's FIRST descendant
-    /// in document order that is an A, a BUTTON, or
-    /// carries role link/button. Returns the same
-    /// values-free JSON report, with outcome 'clicked' /
-    /// 'nodesc' (row found, no such descendant) /
-    /// 'norow'.
-    static func clickChooserRowRetry(needle: String, avoid: String) -> String {
-        """
-        (function(){
-          function vis(el) {
-            if (!el) { return false; }
-            var r = el.getBoundingClientRect();
-            return r.width > 0 && r.height > 0;
-          }
-          var needle = \(doorLiteral(needle)).toLowerCase();
-          var avoid = \(doorLiteral(avoid)).toLowerCase();
-          var cands = document.querySelectorAll('a, button, [role="button"], [role="link"], [role="listitem"], li, div');
-          var best = null;
-          var bestLen = 100000;
-          for (var i = 0; i < cands.length; i++) {
-            var t = (cands[i].innerText || cands[i].textContent || '').trim().replace(/\\s+/g, ' ');
-            if (!t || t.length > 300) { continue; }
-            var low = t.toLowerCase();
-            if (low.indexOf(needle) < 0) { continue; }
-            if (avoid && low.indexOf(avoid) >= 0) { continue; }
-            if (!vis(cands[i])) { continue; }
-            if (t.length < bestLen) { best = cands[i]; bestLen = t.length; }
-          }
-          if (!best) { return JSON.stringify({outcome: 'norow'}); }
-          var desc = best.querySelectorAll('a, button, [role="link"], [role="button"]');
-          if (!desc.length) { return JSON.stringify({outcome: 'nodesc'}); }
-          var target = desc[0];
-          target.scrollIntoView({block: 'center'});
-          var rect = target.getBoundingClientRect();
-          var cx = rect.left + rect.width / 2;
-          var cy = rect.top + rect.height / 2;
-          function fire(type) {
-            var Ctor = (type.indexOf('pointer') === 0 && window.PointerEvent)
-              ? window.PointerEvent : window.MouseEvent;
-            target.dispatchEvent(new Ctor(type,
-              {bubbles: true, cancelable: true, clientX: cx, clientY: cy}));
-          }
-          fire('pointerdown');
-          fire('mousedown');
-          fire('pointerup');
-          fire('mouseup');
-          fire('click');
-          var role = target.getAttribute ? (target.getAttribute('role') || '-') : '-';
-          return JSON.stringify({outcome: 'clicked',
-            tag: target.tagName || '?', role: role,
-            jsaction: !!(target.hasAttribute && target.hasAttribute('jsaction')),
-            qual: 'descendant'});
-        })()
-        """
-    }
+    // 0.2.8 (FL-365): the clickChooserRowRetry payload is
+    // REMOVED with its only caller (scheduleChooserRetry).
+    // The door never re-clicks a chooser row on its own.
 
     /// The post-click step classifier for the chooser
     /// watch: 'signed-in' (the page left
