@@ -145,7 +145,23 @@ có/không + độ dài).
    tự đóng, không cần bấm gì. Để yên tới khi dòng "KẾT QUẢ
    probe18" hiện ra (kèm nhánh kiến trúc A/B/C/D theo cây
    quyết định) rồi tải log ở màn hình chính gửi em.
-13. Các probe còn lại (2, 2b, 2c, 6, 5, E-P2, E-P6, C-3, 10, E-P4, 8)
+13. **Probe 19** — Cuộc đua client: ai phá được trần 480p? (bản 0.2.5):
+   Probe 18 đã đóng cửa VISIONOS; đợt nghiên cứu FL-351 xếp hạng lại
+   các ứng viên còn đứng được, probe này đo hết trong MỘT lần chạy,
+   mọi ô mang CÙNG danh tính device-code của anh (duyệt mã kích hoạt
+   đúng một lần như Probe 18): P19-1 baseline tv_samsung (đối chứng
+   của chính lần chạy) → P19-2 web_embedded ★ (ứng viên số 1: từng
+   lấy trọn 1080p cho phim hội viên trong báo cáo yt-dlp #17049,
+   nhưng bằng cookie — bearer đường TV có được chấp nhận không là
+   câu hỏi chưa ai trả lời) → P19-3 tv-downgraded trần (bỏ vỏ
+   Samsung) → P19-4 bản TV cổ 5.20150304 → P19-5 ba biến thể thông
+   số (sts 8 số, ± supportXhr) của đường hiện tại. Mỗi ô chạy trên
+   cả hai tựa (bị cap + đối chứng). **Vẫn như cũ: tải log bản trước
+   về gửi em TRƯỚC KHI xoá app** — xoá app là log cũ mất. Ô nào trả
+   HLS thì trình phát tự mở thử khung hình đầu vài giây rồi tự đóng.
+   Để yên tới khi hai dòng "KẾT QUẢ probe19" và "KẾT LUẬN TRẦN
+   480p" hiện ra rồi tải log ở màn hình chính gửi em.
+14. Các probe còn lại (2, 2b, 2c, 6, 5, E-P2, E-P6, C-3, 10, E-P4, 8)
    chạy theo thời gian cho phép — mỗi probe đều tự kết luận trong log.
 
 Sau mỗi probe (hoặc cuối buổi): tải log ở màn hình chính YT Probe và
